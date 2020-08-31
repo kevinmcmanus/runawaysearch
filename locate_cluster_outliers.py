@@ -26,6 +26,10 @@ import numpy as np
 import pickle
 import os
 
+#user will provide: cluster name
+
+#everything in this file will be contained in an overall function that the user can call with their specific parameters (can also be used to test our functions)
+
 #set up SIMBAD query for reference of known cluster members (should we use the GAIA associated members from that paper instead? or both like Kevin did in PleiadesGMM?)
 #calculate cluster center from SIBAD/GAIA known reference stars
 
