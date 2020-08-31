@@ -1,4 +1,5 @@
 #AUTHOR: KEVIN MCMANUS
+import tempfile, os
 import numpy as np
 import pandas as pd
 import pickle
@@ -18,11 +19,11 @@ from matplotlib.pyplot import cm
 
 
 
-#default query columns:
 
 
-class fieldstars():
-
+class gaiastars():
+    
+    #default query columns:
     column_list = ['source_id', 'ra','dec','parallax','pmra','pmdec','radial_velocity',
                     'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'e_bp_min_rp_val', 'a_g_val'] #,'r_est'] # r_est not in gaia archive
     tap_service_url = "http://gaia.ari.uni-heidelberg.de/tap" #need to change to use just gaia archive
@@ -37,10 +38,26 @@ class fieldstars():
         'visibility_periods_used>8',
         'astrometric_chi2_al/(astrometric_n_good_obs_al-5)<1.44*greatest(1,exp(-0.4*(phot_g_mean_mag-19.5)))'])
 
-    def __init__(self, name:str):
-        self.name=name
+    def __init__(self, **kwargs):
+        self.name=kwargs.pop('name',None)
+        self.description = kwargs.pop('description', None)
+
         self.coords = None
         self.tap_query_string = None
+        self.objs = None
+
+    def __repr__(self):
+        str = 'GaiaStars Object'
+        if self.name is not None:
+            str += f', Name: {self.name}'
+        if self.description is not None:
+            str += f', Description: {self.description}'
+        if self.objs is not None:
+            str += f', {len(self.objs)} objects' #hope its a dataframe
+        return str
+
+    def __str__(self):
+        return self.__repr__()
 
     def _get_col_list(self, prefix='gs'):
         collist = f'{prefix}.' +  f'\n\t\t,{prefix}.'.join(self.column_list)
@@ -76,8 +93,8 @@ class fieldstars():
         self.objs = job.get_results().to_pandas()
 
         self.objs.set_index('source_id', inplace=True)
-        
-    def from_source_idlist(self, source_idlist, source_idcol=None, filters=False):
+
+    def from_source_idlist(self, source_idlist, source_idcol=None, query_type='async'):
         #xml-ify the source_idlist to a file
         if isinstance(source_idlist, Table):
             #guess which column contains the source ids
@@ -99,36 +116,46 @@ class fieldstars():
             tbl = Table({sidcol:source_idlist})
         else:
             raise ValueError(f'invalid source_idlist type: {type(source_idlist)}')
-        xml_path = 'source_idlist.xml'
-        tbl.write(xml_path, table_id='source_idlist', format='votable', overwrite=True)
-        
-        #build the query:
-        col_list = self._get_col_list() + ', gd.r_est'
-        
-        dbsource =  ''.join([' FROM tap_upload.source_idlist sidl',
-                            f' LEFT JOIN gaiadr2.gaia_source gs ON gs.source_id = sidl.{sidcol}',
-                            f' LEFT JOIN external.gaiadr2_geometric_distance gd on gs.source_id = gd.source_id' ])
-        
-        query_str = f'SELECT sidl.{sidcol} as "source", '+col_list+dbsource
-        if filters:
-            query_str = query_str + ' WHERE '+ self.source_constraints
-        self.tap_query_string = query_str
-        
-        #fetch the data
-        job = Gaia.launch_job_async(query=query_str, upload_resource=xml_path,upload_table_name='source_idlist')
-        self.objs = job.get_results().to_pandas()
-        
-        #fetch data via tap query
-        #tap_service = TAPService(self.tap_service_url)
-        #tap_results = tap_service.search(self.tap_query_string, maxrec=len(tbl),uploads={'source_idlist':tbl})
-        #self.objs = tap_results.to_table().to_pandas()
-        
-        
-        self.objs.set_index('source', inplace=True)
-                
+
+        #need tempfile for source id list
+        fh =  tempfile.mkstemp()
+        os.close(fh[0]) #fh[0] is the file descriptor; fh[1] is the path
+
+        try:
+            tbl.write(fh[1], table_id='source_idlist', format='votable', overwrite=True)
+            
+            #build the query:
+            col_list = self._get_col_list() + ', gd.r_est' #because r_est is in different table
+            
+            dbsource =  ''.join([' FROM tap_upload.source_idlist sidl',
+                                f' LEFT JOIN gaiadr2.gaia_source gs ON gs.source_id = sidl.{sidcol}',
+                                f' LEFT JOIN external.gaiadr2_geometric_distance gd on gs.source_id = gd.source_id' ])
+            
+            # note: no source filter constraints on a source_id query; just get the objects
+            query_str = f'SELECT sidl.{sidcol} as "source", '+ col_list + dbsource
+
+            self.tap_query_string = query_str
+            
+            #fetch the data into a pandas data frame
+            #synchronous job gives better error message than async, use for debugging queries
+            #synchronous job limited to 2000 results or thereabouts.
+            if query_type == 'async':
+                job = Gaia.launch_job_async(query=query_str, upload_resource=fh[1], upload_table_name='source_idlist')
+            elif query_type == 'sync':
+                job = Gaia.launch_job(query=query_str, upload_resource=fh[1], upload_table_name='source_idlist')
+            else:
+                raise ValueError(f'invalid query_type parameter: {query_type}; valid values are: \'async\' and \'sync\'')
+
+            self.objs = job.get_results().to_pandas()
+
+            self.objs.set_index('source', inplace=True)
+
+        finally:
+            #ditch the temporary file
+            os.remove(fh[1])           
     
     def merge(self, right):
-        # joins right fieldstars to self; returns result
+        # joins right gaiastars to self; returns result
         consol_df = self.objs.merge(right.objs,left_index=True, right_index=True, how='outer', indicator=True)
 
         consol_df['which'] = consol_df._merge.apply(lambda s: right.name if s == 'right_only' else self.name if s == 'left_only' else 'both')
@@ -140,7 +167,7 @@ class fieldstars():
 
         consol_df.drop(columns = [s+'_x' for s in mycols]+[s+'_y' for s in mycols], inplace=True)
         
-        my_fs = fieldstars(name = self.name + ' merged with ' + right.name)
+        my_fs = gaiastars(name = self.name + ' merged with ' + right.name)
         my_fs.objs = consol_df
         my_fs.tap_query_string = [self.tap_query_string, right.tap_query_string]
         
@@ -170,7 +197,7 @@ class fieldstars():
         #distmod = (10.0 - 5.0*np.log10(self.objs.parallax)) if absmag else 0.0
         #distance = coord.Distance(parallax=u.Quantity(np.array(self.objs.Plx)*u.mas),allow_negative=True)
 
-        abs_mag = self.objs.phot_g_mean_mag - distmod
+        abs_mag = self.objs.phot_g_mean_mag - (distmod if absmag else 0)
         BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
 
         yax.scatter(BP_RP,abs_mag, s=1,  label=self.name, color=color)
@@ -275,20 +302,35 @@ class fieldstars():
 
 def from_pickle(picklefile):
     """
-    reads up a pickle file and hopefully it's a pickled fieldstars object
+    reads up a pickle file and hopefully it's a pickled gaiastars object
     """
     with open(picklefile,'rb') as pkl:
         my_fs = pickle.load(pkl)
         
-    if not isinstance(my_fs, fieldstars):
+    if not isinstance(my_fs, gaiastars):
         raise ValueError(f'pickle file contained a {type(my_fs)}')
         
     return my_fs
 
 if __name__ == '__main__':
 
-    fs = fieldstars(52.074625695066345*u.degree, 48.932707471347136*u.degree, 1.0*u.degree, plx_error_thresh=5, r_est=(175,185))
+    fs = gaiastars(name='test cone search', description='test of the new capabilities of GaiaStars')
+    print(fs)
+    fs.conesearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 1.0*u.degree, plx_error_thresh=5, r_est=(175,185))
+    print(fs)
 
     print(f'There are {len(fs.objs)} field stars')
+
+    id_list = list(fs.objs.index)
+    fs2 = gaiastars(name='test id search')
+    fs2.from_source_idlist(id_list)
+    print(fs2)
+
+    fs3 = gaiastars(name='test missing id handling')
+    idlist2 = id_list[0:5]+[0,1234] #invalid source ids
+    fs3.from_source_idlist(idlist2, query_type='sync')
+    print(fs3)
+    print(fs3.objs)
+
 
     print(fs.tap_query_string)
