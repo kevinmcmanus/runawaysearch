@@ -1,1 +1,0 @@
-#this is where functions for searching SIMBAD, GAIA known members, and SDSS or other catalogs
