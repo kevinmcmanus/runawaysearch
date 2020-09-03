@@ -298,6 +298,61 @@ class gaiastars():
         self.coords = None
         
         return
+    
+    def points_to(self, center, tol = 1.0 * u.mas, differential = True, project_center_motion = False):
+        """
+        for each obj in self, computes whether the obj's motion points back to the center.
+        
+        Arguments:
+            self: gaiastars instance with populated objs
+            center:  astropy.SkyCoord instance
+            tol: astropy quantity, precision of the comparison in milliarcseconds
+            differential: True if differential motions are to be considered
+            project_center_motion: True if center's motions are to be projected onto the individual objects' motions
+        
+        Returns:
+            pandas series of booleans, index matching that of self.objs            
+        """
+        
+        #Get sky coords for the objects and make 2d arrays for ra, dec and pmra, pmdec
+        objs_coords = self.get_coords()
+        radec = np.array([(c.ra.value, c.dec.value) for c in objs_coords])
+        pm = np.array([(c.pm_ra_cosdec.value, c.pm_dec.value) for c in objs_coords])
+        
+        #make row vectors for the center
+        cen_radec = np.array([center.ra.value, center.dec.value]).reshape(1,2)
+        cen_pm = np.array([center.pm_ra.value, center.pm_dec.value]).reshape(1,2)
+        
+        #calculate center's ra dec relative to each object
+        cen_relative_radec = cen_radec - radec
+        assert cen_relative_radec.shape == radec.shape
+        
+        #if projecting, calculate the centers' motion projected onto each object
+        # to be implemented later
+        #if project_center_motion:
+        #    center_motion = self.project_motion(self, center)
+        #else:
+        # the center motion is the same for each object
+        center_motion = np.tile(cen_pm, (len(self.objs), 1))
+        assert center_motion.shape == pm.shape
+        
+        #if considering differential motion, subtract out the center's motion from each of objs'
+        if differential:
+            obj_pm = pm - center_motion
+        else:
+            obj_pm = pm
+            
+        #the ratios of the relative radec and the motions must be equal to 'point-to'
+        cen_ratio = cen_relative_radec[:,1]/cen_relative_radec[:,0]
+        pm_ratio = obj_pm[:,1]/obj_pm[:,0]
+        
+        #see if the ratios are within tolerance of eachother
+        points_to = np.abs(cen_ratio - pm_ratio) <= tol.value
+        
+        #prep the return value
+        s = pd.Series(data=points_to, index = self.objs.index, name = 'points_to')
+        
+        return s
 
 
 def from_pickle(picklefile):
