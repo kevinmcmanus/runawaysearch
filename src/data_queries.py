@@ -18,30 +18,53 @@ import os
 #clusters = ["Pleiades"]
 
 #function for querying simbad with given cluster name
-def querySIMBAD(cluster_names):
+def querySIMBAD(objnames, formatGaia=False):
+    """
+    Returns SIMBAD catalog info for one or more object names
+    Arguments:
+        objnames: str (single name), list of strs (multiple names) or dict (names from key values)
+    """
+    if isinstance(objnames,str):
+        ids = [ objnames ]
+    elif isinstance(objnames, list):
+        ids = objnames
+    elif isinstance(objnames, dict):
+        ids = list(objnames.keys())
+    else:
+        raise TypeError(f'Invalid argument type; Valid types are str, list and dict')
+
+
     #set up simbad search
     sim = Simbad()
     sim.add_votable_fields('parallax', 'pm','velocity','typed_id')
     #make table of data queried from given cluster name
-    sim_table = vstack([sim.query_object(c) for c in cluster_names],join_type = 'exact')
+    sim_table = vstack([sim.query_object(id) for id in ids], join_type = 'exact')
     #turn into usable table
     cluster_data = Table(sim_table['TYPED_ID', 'PLX_VALUE', 'PLX_PREC','RA', 'RA_PREC', 'DEC', 'DEC_PREC', 
                                    'PMRA', 'PMDEC', 'RVZ_RADVEL', 'RVZ_ERROR'])
+    if formatGaia:
+        name_mapper = objnames if isinstance(objnames, dict) else None
+        return formatSIMBADtoGAIA(cluster_data, name_mapper=name_mapper)
     return(cluster_data)
 
 
-def formatSIMBADtoGAIA(simbad_table):
+def formatSIMBADtoGAIA(simbad_table, name_mapper=None):
     """
     the simbad table has different collumn names and coordinates than GAIA, 
     this function converts the SIMBAD data table into the GAIA format
     """
+    if name_mapper is not None:
+        if not isinstance(name_mapper, dict):
+            raise TypeError('name_mapper argurment must be a dict')
+
+
     my_table = simbad_table.copy() # so we don't clobber the argument table
 
     #change the TYPED_ID to a regular ol' string (gotta be a better way to do this):
     my_table['TYPED_ID'] = [c.decode('utf-8') for c in my_table['TYPED_ID']]
 
     #fix up the column names
-    my_table.rename_column('TYPED_ID','cluster')
+    my_table.rename_column('TYPED_ID','typed_id')
     my_table.rename_column('PLX_VALUE','parallax')
     my_table.rename_column('PLX_PREC', 'parallax_error')
     my_table.rename_column('RA', 'ra')
@@ -56,7 +79,14 @@ def formatSIMBADtoGAIA(simbad_table):
     #ditch the masked arrays
     my_table = my_table.filled()
 
-    #add cluster index
+    #add cluster column which is either the typed name or the mapped name
+    if name_mapper is not None:
+        #for names not mapped, substitute the typed_id
+        my_table['cluster']=[name_mapper.get(tid, tid) for tid in my_table['typed_id']]
+    else:
+        my_table['cluster'] = my_table['typed_id']
+
+    #add index on cluster
     my_table.add_index('cluster')
     
     #tack on sky coordinate objects for each
@@ -115,10 +145,21 @@ def getDistances(plot, cluster_data, known_members, cluster_name):
 
 
 if __name__ == '__main__':
-    clusters = ['Pleiades', 'Hyades']
+    name_mapper = {
+        'Hyades': 'Hyades',
+        'Coma Berenices Cluster': 'ComaBer',
+        'Pleiades': 'Pleiades',
+        'Praesepe': 'Praesepe',
+        'alpha Per': 'alphaPer',
+        'IC 2391': 'IC2391',
+        'IC 2602': 'IC2602',
+        'Blanco 1': 'Blanco1',
+        'NGC 2451A': 'NGC2451'
+    }
+ 
 
     print('\n------------------Test querySIMBAD ----------------')
-    simbad_info = querySIMBAD(clusters)
+    simbad_info = querySIMBAD(name_mapper)
     print(simbad_info)
     orig_colnames = simbad_info.colnames
 
@@ -129,6 +170,10 @@ if __name__ == '__main__':
     # did we clobber simbad_info?
     assert simbad_info.colnames == orig_colnames
 
+    print('\n------------------Test Combined Query ----------------')
+    cluster_info2 = querySIMBAD(name_mapper, formatGaia=True)
+    print(cluster_info2.loc['Pleiades']['coords'])
+    print(cluster_info2)
 
     print('\n------------------Test GetGAIAKnownMembers ----------------')
     cluster_members, cluster_names = getGAIAKnownMembers()
