@@ -298,6 +298,125 @@ class gaiastars():
         self.coords = None
         
         return
+    
+    def project_center_motion(self, cen_coord, return_df=True):
+        """
+        calculates the motion of the center projected onto the lines of sight to the constituent stars
+        Arguments:
+            self: gaiastars instance
+            cen_coord: SkyCoord instance capturing position presumably of a cluster center
+            return_df: Boolean: if True return pandas data frame otherwise return numpy array
+        Returns:
+            if return_df, pandas dataframe, one row for each of self.objs, columns for the projected PMRA and PMDEC.
+            if not return_df, numpy array, one row for each of self.objs, column0 projected PMRA, column1 projected PMDEC
+        Reference:
+            https://www.aanda.org/articles/aa/full_html/2009/13/aa11382-08/aa11382-08.html (see eq3 and eq4)
+        """
+
+        k = 4.74047 #magic number to convert mas/yr to km/sec at 1 kpc (see reference)
+
+        nobjs = len(self.objs) #number of stars
+
+        #get necessary params for the center, need 3x1 velocity vector
+        cen_plx = cen_coord.distance.to(u.mas, equivalencies = u.parallax())
+        cen_vel = np.array([(cen_coord.radial_velocity).value,
+                            (k*cen_coord.pm_ra/cen_plx).value,
+                            (k*cen_coord.pm_dec/cen_plx).value]).reshape(3,1)
+
+        #get SkyCoords for each object
+        star_coord = self.get_coords()
+
+        #below are 1 x nobjs vectors of sins & cos of each obj's ra and dec
+        sin_ra  = np.sin(star_coord.ra.radian); cos_ra = np.cos(star_coord.ra.radian)
+        sin_dec = np.sin(star_coord.dec.radian); cos_dec = np.cos(star_coord.dec.radian)
+
+        #create and transpose projection matrix (see equation 3)
+        #array is 9 x nobjs, then transposed to nobjs x 9 (one row for each obj)
+        proj = np.array( [cos_ra*cos_dec,      sin_ra*cos_dec,      sin_dec,
+                         -sin_ra,              cos_ra,              np.zeros(nobjs),
+                         -cos_ra*sin_dec,     -sin_ra*sin_dec,      cos_dec]).T
+        # reshape to 3d array; one 3x3 projection matrix for each star 
+        proj = proj.reshape((nobjs, 3, 3))
+
+        #projection is the matrix product of each obj's proj matrix (3x3) with the center's velocity column vector
+        proj_vel = proj.dot(cen_vel) #returns 2d array of column vectors
+        assert proj_vel.shape == (nobjs, 3, 1)
+
+        #ditch the awkward low order dimension
+        proj_vel = proj_vel.reshape((nobjs, 3))
+
+
+        # get the motions in pmra and pmdec in mas/year (see equation 2)
+        # pmra is column 1, pmdec is column 2
+        star_plx = star_coord.distance.to(u.mas, equivalencies = u.parallax()).value
+        pmra = proj_vel[:,1]*star_plx/k
+        pmdec = proj_vel[:,2]*star_plx/k
+
+        #package up the goods:
+        if return_df:
+            retval = pd.DataFrame({'proj_pmra': pmra, 'proj_pmdec':pmdec},
+                                  index=pd.Index(self.objs.index, name=self.objs.index.name))
+        else:
+            retval = np.array([pmra, pmdec]).T #transpose to nbojs x 2
+
+        return (retval)
+
+    def points_to(self, center, tol = 1.0 * u.mas, differential = True, project_center_motion = False):
+        """
+        for each obj in self, computes whether the obj's motion points back to the center.
+        
+        Arguments:
+            self: gaiastars instance with populated objs
+            center:  astropy.SkyCoord instance
+            tol: astropy quantity, precision of the comparison in an angular measurement
+            differential: True if differential motions are to be considered
+            project_center_motion: True if center's motions are to be projected onto the individual objects' motions
+        
+        Returns:
+            pandas series of booleans, index matching that of self.objs            
+        """
+        
+        #Get sky coords for the objects and make 2d arrays for ra, dec and pmra, pmdec
+        objs_coords = self.get_coords()
+        radec = np.array([(c.ra.value, c.dec.value) for c in objs_coords])
+        pm = np.array([(c.pm_ra_cosdec.value, c.pm_dec.value) for c in objs_coords])
+        
+        #make row vectors for the center
+        cen_radec = np.array([center.ra.value, center.dec.value]).reshape(1,2)
+        cen_pm = np.array([center.pm_ra.value, center.pm_dec.value]).reshape(1,2)
+        
+        #calculate center's ra dec relative to each object
+        cen_relative_radec = cen_radec - radec
+        assert cen_relative_radec.shape == radec.shape
+        
+        #if projecting, calculate the centers' motion projected onto each object
+        if project_center_motion:
+            center_motion = self.project_center_motion(center, return_df=False)
+        else:
+            # the center motion is the same for each object
+            center_motion = np.tile(cen_pm, (len(self.objs), 1))
+        assert center_motion.shape == pm.shape
+        
+        #if considering differential motion, subtract out the center's motion from each of objs'
+        if differential:
+            obj_pm = pm - center_motion
+        else:
+            obj_pm = pm
+            
+        #the angles of the relative position and velocity vectors (in radians)
+        # need 4 quadrant version of arctan for proper orientation
+        cen_rad = np.arctan2(cen_relative_radec[:,1],cen_relative_radec[:,0])
+        pm_rad = np.arctan2(obj_pm[:,1],obj_pm[:,0])
+        
+        #convert the tolerance to radians 4.85e-9 radian/mas
+        tol_rad = coord.Angle(tol).radian
+        #see if the ratios are within tolerance of eachother
+        points_to = np.abs(cen_rad - pm_rad) <= tol_rad
+        
+        #prep the return value
+        s = pd.Series(data=points_to, index = self.objs.index, name = 'points_to')
+        
+        return s
 
 
 def from_pickle(picklefile):
