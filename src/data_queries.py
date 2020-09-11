@@ -1,4 +1,4 @@
-from locate_cluser_outliers.src.gaiastars import *
+from locate_cluser_outliers.src.gaiastars import gaiastars as gs
 from astroquery.simbad import Simbad
 from astropy.time import Time
 
