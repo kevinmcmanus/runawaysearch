@@ -1,5 +1,6 @@
 from locate_cluser_outliers.src.gaiastars import gaiastars as gs
 from locate_cluster_outliers.src.data_quieries import *
+from locate_cluster_outliers.src.calculate_cluster_calues import *
 import astropy.units as u
 from astropy.coordinates.sky_coordinate import SkyCoord
 from astropy.units import Quantity
@@ -10,7 +11,7 @@ import pandas as pd
 import numpy as np
 import os
 #need to calculate color index of stars in cluster based on their magnitudes in certain filters
-#this function will get magnitudes of our known cluster members
+#this function will get the known members absolute magnitudes of our known cluster members
 def getMagsKnownMembers(known_members):
     #get known members
     #known_members = getGaiaKnownMembers(cluster_name) <--I realized I will pass this in 
@@ -21,24 +22,25 @@ def getMagsKnownMembers(known_members):
     distmod = 5*np.log10(known_gaia.objs.r_est)-5
     
     abs_mag = known_gaia.objs.phot_g_mean_mag - distmod 
+    #green?
     g_mag = known_gaia.objs.phot_g_mean_mag
+    #blue?
     bp_map = known_gaia.objs.phot_bp_mean_mag
+    #red?
     rp_mag = known_gaia.objs.phot_rp_mean_mag
     
     return(g_mag, bp_mag, rp_mag, abs_mag)
-#this function will get their absolute magnitudes from their filter magnitudes
+
 
 #this function will get the color index of known members
 def getColorExcessKnownMembers(known_members):
-    #get known members
-#     known_members = getGaiaKnownMembers(cluster_name) <- passing this in now
     #get gaia data for the known members
     known_gaia = gs(cluster_name+': Known Members')
     known_gaia.from_source_idlist(known_members.index.to_list())
     #get magnitudes from gaia for known members
     distmod = 5*np.log10(known_gaia.objs.r_est)-5
     bp_rp = known_gaia.objs.phot_bp_mean_mag - known_gaia.objs.phot_rp_mean_mag
-    #do we want to do a different color index? 
+    #do we want to do a different color index? this is blue minus red I think
     return(bp_rp)
 
 #this function will convert filter types of gaia magnitudes to different ones because I think this is necessary?
@@ -54,7 +56,10 @@ def getColorExcessKnownMembers(known_members):
     also will the stars passed in be compatible with gaia_stars?
 """
 # #this function will get the color index of candidate members 
-# def getColorIndexCandidates(candidate_members):
+# def getColorExcessCandidates(candidate_members):
 #     
 # #this function will get magnitudes of our candidate members 
 # def getMagsCandidateMembers(candidate_members):
+#get distance to candidates from sun
+#based on distance, get apparent mag of candidates
+#assuming they are on the main sequence 

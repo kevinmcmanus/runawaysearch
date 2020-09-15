@@ -1,8 +1,8 @@
-<<<<<<< HEAD
+
 from locate_cluser_outliers.src.gaiastars import gaiastars as gs
 =======
 #from locate_cluser_outliers.src.gaiastars import *
->>>>>>> 5e5c56bbad55098d47e3ec94d436ffc33017bce0
+# >>>>>>> 5e5c56bbad55098d47e3ec94d436ffc33017bce0
 from astroquery.simbad import Simbad
 from astropy.time import Time
 
@@ -132,20 +132,6 @@ def getGAIAKnownMembers(name_mapper=None):
         distance = coord.Distance(parallax=Quantity(np.array(known_members.plx)*u.mas)))
     
     return(known_members, cluster_names)
-
-
-#this function will add various distances to the known members table, plot is a boolean to know if the result should be converted into a dimentionless scalar
-def getDistances(plot, cluster_data, known_members, cluster_name):
-    #add column for distance of each member to cluster center
-    known_members['dist_c3d']=[s[1].coords.separation_3d(cluster_data.loc[s[1].SimbadCluster]['coords']) for s in known_members.iterrows()]
-    
-    #if you want to plot you need it to be a dimentionless scalar
-    if(plot == True):
-        known_members['dist_c3d'] = Quantity(members.dist_c3d, unit=u.pc).valueS
-    
-    #get distance of each member from sun
-    known_members['r_est'] = [s.distance.value for s in members.coords]
-    return(known_members)
 
 
 if __name__ == '__main__':

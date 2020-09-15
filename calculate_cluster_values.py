@@ -1,1 +1,0 @@
-#this is where functions for calculating magnitude, color index, and whatever other values we need 
