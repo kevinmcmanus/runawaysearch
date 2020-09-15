@@ -29,7 +29,7 @@ def getMagsKnownMembers(known_members):
 #this function will get their absolute magnitudes from their filter magnitudes
 
 #this function will get the color index of known members
-def getColorIndexKnownMembers(known_members):
+def getColorExcessKnownMembers(known_members):
     #get known members
 #     known_members = getGaiaKnownMembers(cluster_name) <- passing this in now
     #get gaia data for the known members
