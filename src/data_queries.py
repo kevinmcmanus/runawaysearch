@@ -95,7 +95,7 @@ def formatSIMBADtoGAIA(simbad_table, name_mapper=None):
             dec = my_table['dec'], unit = (u.hour, u.deg),
             obstime = 'J2000',  #simbad returns J2000 coords
             distance = coord.Distance(parallax=Quantity(my_table['parallax'])),
-            pm_ra_cosdec = my_table['pmra'],
+            pm_ra_cosdec = my_table['pmra'], #SIMBAD labels it pmra but the measure includes cos(dec)
             pm_dec = my_table['pmdec'],
         radial_velocity = my_table['radial_velocity']).apply_space_motion(new_obstime=Time(2015.5,format='decimalyear'))
     
