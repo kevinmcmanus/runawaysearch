@@ -185,6 +185,8 @@ class gaiastars():
 		ax = kwargs.get('ax')
 		title = kwargs.get('title', 'HR Diagram')
 		color = kwargs.get('color', 'blue')
+		s = kwargs.get('s',1)
+		label = kwargs.get('label', self.name)
 		alpha = kwargs.get('alpha', 1.0)      
 		absmag = kwargs.get('absmag', True)
 		
@@ -200,7 +202,7 @@ class gaiastars():
 		abs_mag = self.objs.phot_g_mean_mag - (distmod if absmag else 0)
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
 
-		yax.scatter(BP_RP,abs_mag, s=1,  label=self.name, color=color)
+		yax.scatter(BP_RP,abs_mag, label=label, s=s, color=color, alpha=alpha)
 		if not yax.yaxis_inverted():
 			yax.invert_yaxis()
 		yax.set_xlim(-1,5)
@@ -267,6 +269,7 @@ class gaiastars():
 		return self.coords
 
 	def maxsep(self):
+		##Todo allow a center to be passed in
 		#computes maximum separation from mean of objects
 		ra_mean = self.objs.ra.mean()*u.degree
 		dec_mean = self.objs.dec.mean()*u.degree
@@ -304,6 +307,12 @@ class gaiastars():
 		self.coords = None
 		
 		return
+
+	def query(self, query_str):
+		mystars = gaiastars(name=self.name, description = f'{self.description} with query: {query_str}')
+		mystars.tap_query_string = self.tap_query_string
+		mystars.objs = self.objs.query(query_str)
+		return mystars
 	
 	def project_center_motion(self, cen_coord, return_df=True):
 		"""
@@ -380,14 +389,18 @@ class gaiastars():
 		Returns:
 			pandas series of booleans, index matching that of self.objs            
 		"""
-		#get necessary measures into numpy arrays (objects on low-order dimension)
+		#get necessary measures into numpy arrays 
 		cen_radec = np.array([center.ra.value, center.dec.value]).reshape(2,1)
 		cen_dist = center.distance.value
-		obj_radec_abs = np.array([self.objs.ra, self.objs.dec])
-		obj_pm = np.array([self.objs.pmra, self.objs.pmdec])
+		#get the center's motions,  adjust for cos(dec), as gaia pm's include this
+		cen_pm = np.array([center.pm_ra.value*np.cos(center.dec.radian), center.pm_dec.value]).reshape(2,1)
 
-		#move the reference frame to cluster center
+		#move the reference frame to cluster center (objects on low-order dimension)
+		obj_radec_abs = np.array([self.objs.ra, self.objs.dec])
 		obj_radec = obj_radec_abs - cen_radec
+
+		#each object's differential motion wrt center:
+		obj_relpm = np.array([self.objs.pmra, self.objs.pmdec]) - cen_pm
 
 		#calculate phi, the angle of the star wrt. axis RA=0, this would be theta if we were using polar coords
 		phi = np.arctan2(obj_radec[1],obj_radec[0])
@@ -407,12 +420,12 @@ class gaiastars():
 		lower = np.where(lower < 0, lower+2*np.pi, lower)
 
 		#calculate the PM direction and adjust to positive angle
-		pm_dir = np.arctan2(obj_pm[1], obj_pm[0])
-		pm_dir = np.where(pm_dir < 0, pm_dir+2.0*np.pi, pm_dir)
-		assert np.all(np.logical_and(pm_dir >= 0, pm_dir <= 2.0*np.pi))
+		pm_reldir = np.arctan2(obj_relpm[1], obj_relpm[0])
+		pm_reldir = np.where(pm_reldir < 0, pm_reldir+2.0*np.pi, pm_reldir)
+		assert np.all(np.logical_and(pm_reldir >= 0, pm_reldir <= 2.0*np.pi))
 
 		#test whether PM direction within bounds
-		inbounds = np.logical_and(pm_dir >= lower, pm_dir <= upper)
+		inbounds = np.logical_and(pm_reldir >= lower, pm_reldir <= upper)
 
 		#test distance constraint
 		within_dist = np.logical_and(self.objs.r_est >= cen_dist*(1-center_dist_tol),
@@ -429,7 +442,7 @@ class gaiastars():
 		dist_from_sun = self.objs.r_est 
 
 		#Get pm's in radians/year
-		pm_rad_radec = np.radians(obj_pm/3.6e6) #to convert mas to degrees then to radians
+		pm_rad_radec = np.radians(obj_relpm/3.6e6) #to convert mas to degrees then to radians
 		pm_rad = np.sqrt((pm_rad_radec**2).sum(axis=0)) # radians per year
 		# convert to mas per year
 		mas_per_radian = 2.0628e8
@@ -442,14 +455,19 @@ class gaiastars():
 		ret_df = pd.DataFrame({
 							'CenRA': cen_radec[0,0],
 							'CenDec': cen_radec[1,0],
+                            'CenRad': center_radius,
+                            'CenPMRA': cen_pm[0,0],
+                            'CenPMDec': cen_pm[1,0],
 							'CenDist': cen_dist,
 							'ObjRA':obj_radec_abs[0],
 							'ObjDec': obj_radec_abs[1],
+                            'ObjPMRA': self.objs.pmra,
+                            'ObjPMDec': self.objs.pmdec,
 							'ObjRelRA': obj_radec[0],
 							'ObjRelDec': obj_radec[1],
-							'ObjPMRA': obj_pm[0],
-							'ObjPMDec': obj_pm[1],
-							'ObjPMDir': pm_dir,
+							'ObjRelPMRA': obj_relpm[0],
+							'ObjRelPMDec': obj_relpm[1],
+							'ObjRelPMDir': pm_reldir,
 							'ObjDistCen': d,
 							'ObjVelMag':pm_v,
 							'ObjDistSun': self.objs.r_est,
