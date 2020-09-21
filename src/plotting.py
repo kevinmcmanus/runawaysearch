@@ -1,9 +1,14 @@
+# <<<<<<< points_to
 
 #general file for all plotting needs (keeps the main program neat)
 
 
 #from locate_cluser_outliers.src.gaiastars import gaiastars as gs
 #from locate_cluster_outliers.src.data_quieries import *
+# =======
+from locate_cluser_outliers.src.gaiastars import gaiastars as gs
+from locate_cluster_outliers.src.data_quieries import *
+# >>>>>>> master
 import matplotlib.pyplot as plt
 
 #general file for all plotting needs (keeps the main program neat
@@ -17,6 +22,7 @@ import matplotlib.pyplot as plt
 # def plotDistances(distance_to_plot):
 # def plotHrDiagrams(color_index, abs_mag):
 
+# <<<<<<< points_to
 def make_square_axes(ax):
     """Make an axes square in screen units.
 
@@ -184,3 +190,6 @@ def plot_points_to(ptr, cluster, ax):
     ax.legend(handles, labels, shadow=True)
     ax.grid()
     
+# =======
+
+# >>>>>>> master
