@@ -23,20 +23,21 @@ from matplotlib.pyplot import cm
 
 class gaiastars():
 	
-	#default query columns:
-	column_list = ['source_id', 'ra','dec','parallax','pmra','pmdec','radial_velocity',
-					'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'e_bp_min_rp_val', 'a_g_val'] #,'r_est'] # r_est not in gaia archive
-	tap_service_url = "http://gaia.ari.uni-heidelberg.de/tap" #need to change to use just gaia archive
+	#default tables and columns:
+	gaia_column_dict ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
+                							'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
+                    						'e_bp_min_rp_val', 'a_g_val'],
+                'external.gaiadr2_geometric_distance': ['r_est']}
 	
-	source_constraints = ' AND '.join([
-		'parallax_over_error > 10',
-		'phot_g_mean_flux_over_error>50',
-		'phot_rp_mean_flux_over_error>20',
-		'phot_bp_mean_flux_over_error>20',
-		'phot_bp_rp_excess_factor < 1.3+0.06*power(phot_bp_mean_mag-phot_rp_mean_mag,2)',
-		'phot_bp_rp_excess_factor > 1.0+0.015*power(phot_bp_mean_mag-phot_rp_mean_mag,2)',
-		'visibility_periods_used>8',
-		'astrometric_chi2_al/(astrometric_n_good_obs_al-5)<1.44*greatest(1,exp(-0.4*(phot_g_mean_mag-19.5)))'])
+	gaia_source_constraints = ' AND '.join([
+		'gaiadr2.gaia_source.parallax_over_error > 10',
+		'gaiadr2.gaia_source.phot_g_mean_flux_over_error>50',
+		'gaiadr2.gaia_source.phot_rp_mean_flux_over_error>20',
+		'gaiadr2.gaia_source.phot_bp_mean_flux_over_error>20',
+		'gaiadr2.gaia_source.phot_bp_rp_excess_factor < 1.3+0.06*power(gaiadr2.gaia_source.phot_bp_mean_mag-gaiadr2.gaia_source.phot_rp_mean_mag,2)',
+		'gaiadr2.gaia_source.phot_bp_rp_excess_factor > 1.0+0.015*power(gaiadr2.gaia_source.phot_bp_mean_mag-gaiadr2.gaia_source.phot_rp_mean_mag,2)',
+		'gaiadr2.gaia_source.visibility_periods_used>8',
+		'gaiadr2.gaia_source.astrometric_chi2_al/(gaiadr2.gaia_source.astrometric_n_good_obs_al-5)<1.44*greatest(1,exp(-0.4*(gaiadr2.gaia_source.phot_g_mean_mag-19.5)))'])
 
 	def __init__(self, **kwargs):
 		self.name=kwargs.pop('name',None)
@@ -59,103 +60,159 @@ class gaiastars():
 	def __str__(self):
 		return self.__repr__()
 
-	def _get_col_list(self, prefix='gs'):
-		collist = f'{prefix}.' +  f'\n\t\t,{prefix}.'.join(self.column_list)
-		return collist
+	def _get_col_list(self, coldict):
+		"""
+		makes an ADQL column list from the supplied dictionary, ensuring first table supplies a source_id column
+		Arguments:
+			coldict: dictionary of form <table>:[column,...],...
+		Returns:
+			collist: string, an ADQL-syntax column list
+		"""
+		strs = []
+		first = True
+		for t in coldict:
+
+			s = f' {t}.'
+			cols = coldict[t]
+
+			#if source_id isn't in the first table's column list, prepend it on
+			if first:
+				first=False
+				if not 'source_id' in cols:
+					cols = ['source_id']+cols
+
+			tstr = s + (', '+t+'.').join(cols)
+
+			strs.append(tstr)
+
+		return ','.join(strs)
+
+	def _get_db_source(self, coldict, join_type='LEFT JOIN'):
+		"""
+		makes an ADQL database source from the supplied dictionary, suitable for FROM clause of ADQL query
+		assumes LEFT JOINs among the tables
+		Arguments:
+			coldict: dictionary of form <table>:[column,...],...
+			join_type: 'LEFT JOIN' or 'INNER JOIN'
+		Returns:
+			dbsource: string, suitable as operand of FROM ADQL query clause
+		"""
+		tbl_list = list(coldict.keys())
+		first = tbl_list[0]
+		dbsrc = first
+		for t in tbl_list[1:]:
+			dbsrc += f' {join_type} {t} ON {first}.source_id = {t}.source_id'
+
+		return dbsrc
+
 	
 	@u.quantity_input(ra='angle', dec='angle', rad='angle')
 	def conesearch(self, ra, dec, radius, **kwargs):
-		## ToDo: rewrite to use Gaia Archive, not tap service.  Need to ditch distance param and just use parallax
+		"""
+		Performs a cone search of the Gaia Archive at the supplied coordinates and radius
+		Arguments:
+			ra, dec: astropy.quantity.Angle objects specifying coords of center of cone seacrh
+			rad: astropy.quantity.Angle object specifying the angular radius of the cone search
+			column_dict: optional dictionary of form: <gaiatable>:[column list]; default:gaiastars.gaia_column_dict
+			constraints: optional string specifying query constraints; default:gaiastars.gaia_source_contraints
+		Returns:
+			Nothing, updates self.objs with pandas query results
+		"""
+
 		# input parameters in degrees:
 		ra_ = ra.to(u.degree); dec_= dec.to(u.degree); rad_=radius.to(u.degree)
 
-		maxrec = kwargs.get('maxrec', 20000)
+		#use default table columns and constraints?
+		column_dict = kwargs.pop('column_dict', self.gaia_column_dict)
+		constraints = kwargs.pop('source_constraints', self.gaia_source_constraints)
 
-		columnlist = self._get_col_list() + ', gd.r_est'
-		dbsource = '\n\t'.join(['\nFROM external.gaiadr2_geometric_distance gd',
-					'INNER JOIN gaiadr2.gaia_source gs using (source_id) '])
+		col_list = self._get_col_list( column_dict)
+		db_source = self._get_db_source(column_dict, join_type='INNER JOIN')
 
-		constraints =  '\n\t'.join(['\nWHERE ', 
-				'CONTAINS(POINT(\'\', gs.ra, gs.dec), ',
-				'\tCIRCLE(\'\', {ra}, {dec}, {rad})) = 1 '.format(ra=ra_.value, dec=dec_.value, rad=rad_.value)])
+		#construct minimal cone search query filter (column_dict needs to deliver an ra and dec)
+		query_filter =  'CONTAINS(POINT(\'\', ra, dec), '\
+			' CIRCLE(\'\', {ra}, {dec}, {rad})) = 1 '.format(ra=ra_.value, dec=dec_.value, rad=rad_.value)
 
-		if self.source_constraints is not None:
-			constraints = constraints + ' AND '+ self.source_constraints
+		#tack the constraints onto the query filter if necessary
+		if constraints != 'None':
+			query_filter = f'{query_filter} AND {constraints}'
 
-		self.tap_query_string = 'SELECT \n\t\t'+ columnlist + dbsource + constraints
+		#build the query string and ship it off
+		query_string = f'SELECT {col_list} FROM {db_source} WHERE {query_filter}'
+		self.gaia_query(query_string, query_type='async')
+	
+	def gaia_query(self, query_str, query_type, upload_resource=None, upload_tablename=None):
+		"""
+		Queries Gaia archive with query_str and updates self with results
+		Arguments:
+			query_str: string: valid ADQL query in context of Gaia Archive
+			query_type: string, one of {'sync','async'} (use sync for debugging)
+			upload_resource: string, path to xml file containing list of gaia source ids
+			upload_tablename: string, name of table in upload_resource
+		Returns:
+			Nothing, self.objs updated in place with query results
+					 self.tap_query_string updated with supplied query string
+		"""
+		#save the query string for posterity
+		self.tap_query_string = query_str
 		
-		#tap_service = TAPService(self.tap_service_url)
-		#tap_results = tap_service.search(self.tap_query_string, maxrec=maxrec)
-		#self.objs = tap_results.to_table().to_pandas()
-		#fetch the data
-		
-		job = Gaia.launch_job_async(query=self.tap_query_string)
-		self.objs = job.get_results().to_pandas()
-
-		self.objs.set_index('source_id', inplace=True)
-
-	def from_source_idlist(self, source_idlist, source_idcol=None, query_type='async'):
-		#xml-ify the source_idlist to a file
-		if isinstance(source_idlist, Table):
-			#guess which column contains the source ids
-			if source_idcol is None:
-				if 'source_id' in source_idlist.colnames:
-					sidcol = 'source_id'
-				elif 'source' in source_idlist.colnames:
-					sidcol = 'source'
-				else:
-					raise ValueError('no column to use as source_id')
-			else:
-				if source_idcol not in source_idlist.colnames:
-					raise ValueError(f'invalid column specified as source id column: {source_idcol}')
-				sidcol = source_idcol
-				
-			tbl = source_idlist
-		elif isinstance(source_idlist, np.ndarray) or isinstance(source_idlist, list):
-			sidcol = 'source_id'
-			tbl = Table({sidcol:source_idlist})
+		#fetch the data into a pandas data frame
+		#synchronous job gives better error message than async, use for debugging queries
+		#synchronous job limited to 2000 results or thereabouts.
+		if query_type == 'async':
+			job = Gaia.launch_job_async(query=query_str,
+										upload_resource=upload_resource,
+										upload_table_name=upload_tablename)
+		elif query_type == 'sync':
+			job = Gaia.launch_job(query=query_str,
+							upload_resource=upload_resource,
+							upload_table_name=upload_tablename)
 		else:
-			raise ValueError(f'invalid source_idlist type: {type(source_idlist)}')
+			raise ValueError(f'invalid query_type parameter: {query_type}; valid values are: \'async\' and \'sync\'')
+
+		#get the results as pandas dataframe and index it
+		self.objs = job.get_results().to_pandas().set_index('source_id')
+
+
+	def from_source_idlist(self, source_idlist, column_dict=None, query_type='async'):
+		"""
+		Queries Gaia Archive for specified records; returns columns as spec'd in column_dict
+		Arguments:
+			source_idlist: list of Gaia Source Ids
+			column_dict: optional dictionary of form: <gaiatable>:[column list]; default:gaiastars.gaia_column_dict
+			query_type: string, one of {'sync','async'} (use sync for debugging)
+		Returns:
+			Nothing; updates self in place with pandas DataFrame in property self.objs
+		"""
+		#use default column list if one wasn't passed in
+		coldict = self.gaia_column_dict if column_dict is None else column_dict
 
 		#need tempfile for source id list
 		fh =  tempfile.mkstemp()
 		os.close(fh[0]) #fh[0] is the file descriptor; fh[1] is the path
 
 		try:
+			#xml-ify the source_idlist to a file
+			sidcol = 'source_id'
+			tbl = Table({sidcol:source_idlist})
 			tbl.write(fh[1], table_id='source_idlist', format='votable', overwrite=True)
 			
 			#build the query:
-			col_list = self._get_col_list() + ', gd.r_est' #because r_est is in different table
-			
-			dbsource =  ''.join([' FROM tap_upload.source_idlist sidl',
-								f' LEFT JOIN gaiadr2.gaia_source gs ON gs.source_id = sidl.{sidcol}',
-								f' LEFT JOIN external.gaiadr2_geometric_distance gd on gs.source_id = gd.source_id' ])
-			
-			# note: no source filter constraints on a source_id query; just get the objects
-			query_str = f'SELECT sidl.{sidcol} as "source", '+ col_list + dbsource
+			col_list = self._get_col_list( coldict)
+			db_source = self._get_db_source({'tap_upload.source_idlist':[], **coldict})
+			query_str = f'SELECT {col_list} FROM {db_source}'
 
-			self.tap_query_string = query_str
-			
-			#fetch the data into a pandas data frame
-			#synchronous job gives better error message than async, use for debugging queries
-			#synchronous job limited to 2000 results or thereabouts.
-			if query_type == 'async':
-				job = Gaia.launch_job_async(query=query_str, upload_resource=fh[1], upload_table_name='source_idlist')
-			elif query_type == 'sync':
-				job = Gaia.launch_job(query=query_str, upload_resource=fh[1], upload_table_name='source_idlist')
-			else:
-				raise ValueError(f'invalid query_type parameter: {query_type}; valid values are: \'async\' and \'sync\'')
-
-			self.objs = job.get_results().to_pandas()
-
-			self.objs.set_index('source', inplace=True)
+			#do the deed
+			self.gaia_query(query_str, query_type, upload_resource=fh[1], upload_tablename='source_idlist')
 
 		finally:
 			#ditch the temporary file
 			os.remove(fh[1])           
 	
 	def merge(self, right):
+		"""
 		# joins right gaiastars to self; returns result
+		"""
 		consol_df = self.objs.merge(right.objs,left_index=True, right_index=True, how='outer', indicator=True)
 
 		consol_df['which'] = consol_df._merge.apply(lambda s: right.name if s == 'right_only' else self.name if s == 'left_only' else 'both')
@@ -376,7 +433,7 @@ class gaiastars():
 
 		return (retval)
 
-	def points_to(self, center, center_radius, center_dist_tol = 0.25):
+	def points_to(self, center, center_radius, center_dist_tol = 0.25, inplace=False, allcalcs=True):
 		"""
 		for each obj in self, computes whether the obj's motion points back to the center.
 		
@@ -455,14 +512,14 @@ class gaiastars():
 		ret_df = pd.DataFrame({
 							'CenRA': cen_radec[0,0],
 							'CenDec': cen_radec[1,0],
-                            'CenRad': center_radius,
-                            'CenPMRA': cen_pm[0,0],
-                            'CenPMDec': cen_pm[1,0],
+							'CenRad': center_radius,
+							'CenPMRA': cen_pm[0,0],
+							'CenPMDec': cen_pm[1,0],
 							'CenDist': cen_dist,
 							'ObjRA':obj_radec_abs[0],
 							'ObjDec': obj_radec_abs[1],
-                            'ObjPMRA': self.objs.pmra,
-                            'ObjPMDec': self.objs.pmdec,
+							'ObjPMRA': self.objs.pmra,
+							'ObjPMDec': self.objs.pmdec,
 							'ObjRelRA': obj_radec[0],
 							'ObjRelDec': obj_radec[1],
 							'ObjRelPMRA': obj_relpm[0],
@@ -480,7 +537,15 @@ class gaiastars():
 							'PointsTo': points_to,
 							'YrsDist': d_years},
 					index = pd.Index(self.objs.index, name=self.objs.index.name))
-		return ret_df
+		if allcalcs:
+			collist = ret_df.columns 
+		else:
+			collist = ['Inbounds','WithinDist','PointsTo','YrsDist']
+
+		if inplace:
+			self.objs = self.objs.merge(ret_df[collist],left_index=True, right_index=True)
+		else:
+			return ret_df[collist]
 
 	def _trace_back_obj(self, o, c, t):
 		"""

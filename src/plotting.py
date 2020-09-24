@@ -6,8 +6,8 @@
 #from locate_cluser_outliers.src.gaiastars import gaiastars as gs
 #from locate_cluster_outliers.src.data_quieries import *
 # =======
-from locate_cluser_outliers.src.gaiastars import gaiastars as gs
-from locate_cluster_outliers.src.data_quieries import *
+#from locate_cluser_outliers.src.gaiastars import gaiastars as gs
+#from locate_cluster_outliers.src.data_quieries import *
 # >>>>>>> master
 import matplotlib.pyplot as plt
 
