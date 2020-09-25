@@ -16,18 +16,13 @@ import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 
 
-
-
-
-
-
 class gaiastars():
 	
 	#default tables and columns:
 	gaia_column_dict ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
-                							'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
-                    						'e_bp_min_rp_val', 'a_g_val'],
-                'external.gaiadr2_geometric_distance': ['r_est']}
+											'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
+											'e_bp_min_rp_val', 'a_g_val'],
+				'external.gaiadr2_geometric_distance': ['r_est']}
 	
 	gaia_source_constraints = ' AND '.join([
 		'gaiadr2.gaia_source.parallax_over_error > 10',
@@ -105,7 +100,29 @@ class gaiastars():
 
 		return dbsrc
 
-	
+	@u.quantity_input(ra='angle', dec='angle', ra_ext='angle', dec_ext='angle')
+	def boxsearch(self, ra, dec, ra_ext, dec_ext, **kwargs):
+		"""
+		performs a box search of the Gaia Archive at the supplied coordinates.
+		Box center is at (ra, dec) and box sides are half the extents in both directions.
+		Arguments:
+			ra, dec: astropy.quantity.Angle objects specifying coords of box center
+			ra_ext, dec_ext: astropy.quantity.Angle objects specifying (total) width and height of box
+		Returns:
+			Nothing, updates self.objs with panda query results
+		"""
+		# input parameters in degrees:
+		ra_ = ra.to(u.degree); dec_= dec.to(u.degree);
+		ra_ext_ = ra_ext.to(u.degree); dec_ext_ = dec_ext.to(u.degree)
+
+		#construct minimal box search query filter (column_dict needs to deliver an ra and dec)
+		query_filter =  'CONTAINS(POINT(\'\', ra, dec), '\
+			' BOX(\'\', {ra}, {dec}, {ra_ext}, {dec_ext})) = 1 '.format(ra=ra_.value, dec=dec_.value,
+																		ra_ext=ra_ext_.value, dec_ext=dec_ext_.value)
+
+		self.regionsearch(query_filter, **kwargs)
+
+
 	@u.quantity_input(ra='angle', dec='angle', rad='angle')
 	def conesearch(self, ra, dec, radius, **kwargs):
 		"""
@@ -122,25 +139,38 @@ class gaiastars():
 		# input parameters in degrees:
 		ra_ = ra.to(u.degree); dec_= dec.to(u.degree); rad_=radius.to(u.degree)
 
-		#use default table columns and constraints?
-		column_dict = kwargs.pop('column_dict', self.gaia_column_dict)
-		constraints = kwargs.pop('source_constraints', self.gaia_source_constraints)
-
-		col_list = self._get_col_list( column_dict)
-		db_source = self._get_db_source(column_dict, join_type='INNER JOIN')
-
 		#construct minimal cone search query filter (column_dict needs to deliver an ra and dec)
 		query_filter =  'CONTAINS(POINT(\'\', ra, dec), '\
 			' CIRCLE(\'\', {ra}, {dec}, {rad})) = 1 '.format(ra=ra_.value, dec=dec_.value, rad=rad_.value)
+
+		self.regionsearch(query_filter, **kwargs)
+
+	def regionsearch(self, query_filter, **kwargs):
+		"""
+		executes a Gaia search in a region defined by query_filter
+		Should not be called directly, use gaiastars.conesearch() or gaiastars.boxsearch()
+		"""
+		
+		#use default table columns and constraints?
+		column_dict = kwargs.pop('column_dict', self.gaia_column_dict)
+		constraints = kwargs.pop('source_constraints', self.gaia_source_constraints)
+		parallax = kwargs.pop('parallax', None)
+
+		col_list = self._get_col_list( column_dict)
+		db_source = self._get_db_source(column_dict, join_type='INNER JOIN')
 
 		#tack the constraints onto the query filter if necessary
 		if constraints != 'None':
 			query_filter = f'{query_filter} AND {constraints}'
 
+		#deal with parallax constraint:
+		if parallax is not None:
+			query_filter = f'{query_filter} AND parallax >= {parallax[0]} AND parallax <= {parallax[1]}'
+
 		#build the query string and ship it off
 		query_string = f'SELECT {col_list} FROM {db_source} WHERE {query_filter}'
-		self.gaia_query(query_string, query_type='async')
-	
+		self.gaia_query(query_string, query_type='async')	
+
 	def gaia_query(self, query_str, query_type, upload_resource=None, upload_tablename=None):
 		"""
 		Queries Gaia archive with query_str and updates self with results
@@ -239,38 +269,48 @@ class gaiastars():
 		
 
 	def plot_hrdiagram(self, **kwargs):
-		ax = kwargs.get('ax')
-		title = kwargs.get('title', 'HR Diagram')
-		color = kwargs.get('color', 'blue')
-		s = kwargs.get('s',1)
-		label = kwargs.get('label', self.name)
-		alpha = kwargs.get('alpha', 1.0)      
-		absmag = kwargs.get('absmag', True)
+		ax = kwargs.pop('ax',None)
+		title = kwargs.pop('title', 'HR Diagram')
+		label = kwargs.pop('label',self.name)
+   
+		absmag = kwargs.get('absmag', True) #Absolute or Apparent magnitude?
+		r_est = kwargs.get('r_est',True) #estimated distance or calc from parallax
 		
 		if ax is None:
 			yax = plt.subplot(111)
 		else:
 			yax = ax
 			
-		distmod = 5*np.log10(self.objs.r_est)-5
-		#distmod = (10.0 - 5.0*np.log10(self.objs.parallax)) if absmag else 0.0
-		#distance = coord.Distance(parallax=u.Quantity(np.array(self.objs.Plx)*u.mas),allow_negative=True)
+		
+		if r_est:
+			#use estimated distance
+			dist = self.objs.r_est 
+		else:
+			#use parallax to calc distance
+			dist = coord.Distance(parallax=u.Quantity(np.array(self.objs.parallax)*u.mas),allow_negative=True)
 
-		abs_mag = self.objs.phot_g_mean_mag - (distmod if absmag else 0)
+		distmod = 5*np.log10(dist)-5
+
+		#absolute or apparent magnitude
+		mag = self.objs.phot_g_mean_mag - (distmod if absmag else 0)
+
+		#color
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
 
-		yax.scatter(BP_RP,abs_mag, label=label, s=s, color=color, alpha=alpha)
+		pcm = yax.scatter(BP_RP, mag, label=label, **kwargs)
 		if not yax.yaxis_inverted():
 			yax.invert_yaxis()
 		yax.set_xlim(-1,5)
 		#yax.set_ylim(20, -1)
 
 		yax.set_title(title)
-		yax.set_ylabel('$M_G$',fontsize=14)
-		yax.set_xlabel('$G_{BP}\ -\ G_{RP}$', fontsize=14)
+		yax.set_ylabel(r'$M_G$',fontsize=14)
+		yax.set_xlabel(r'$G_{BP}\ -\ G_{RP}$', fontsize=14)
 		if ax is None:
 			yax.legend()
 			
+		return pcm
+
 	def plot_motions(self, **kwargs):
 		from scipy.stats import kde
 		ax = kwargs.get('ax')
@@ -644,7 +684,7 @@ if __name__ == '__main__':
 
 	fs = gaiastars(name='test cone search', description='test of the new capabilities of GaiaStars')
 	print(fs)
-	fs.conesearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 1.0*u.degree, plx_error_thresh=5, r_est=(175,185))
+	fs.conesearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 1.0*u.degree)
 	print(fs)
 
 	print(f'There are {len(fs.objs)} field stars')
@@ -660,5 +700,9 @@ if __name__ == '__main__':
 	print(fs3)
 	print(fs3.objs)
 
+	fs4 = gaiastars(name='test box search', description='test of the new box search of GaiaStars')
+	print(fs)
+	fs4.boxsearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 5.0*u.degree, 5.0*u.degree, parallax=(5.0,10.0))
+	print(fs4)
 
-	print(fs.tap_query_string)
+	print(fs4.tap_query_string)
