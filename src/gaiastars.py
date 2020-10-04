@@ -272,6 +272,7 @@ class gaiastars():
 		ax = kwargs.pop('ax',None)
 		title = kwargs.pop('title', 'HR Diagram')
 		label = kwargs.pop('label',self.name)
+		s = kwargs.pop('s', 1) #default size = 1
    
 		absmag = kwargs.get('absmag', True) #Absolute or Apparent magnitude?
 		r_est = kwargs.get('r_est',True) #estimated distance or calc from parallax
@@ -297,7 +298,8 @@ class gaiastars():
 		#color
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
 
-		pcm = yax.scatter(BP_RP, mag, label=label, **kwargs)
+		pcm = yax.scatter(BP_RP, mag, label=label, s=s, **kwargs)
+
 		if not yax.yaxis_inverted():
 			yax.invert_yaxis()
 		yax.set_xlim(-1,5)
@@ -497,7 +499,8 @@ class gaiastars():
 		obj_radec = obj_radec_abs - cen_radec
 
 		#each object's differential motion wrt center:
-		obj_relpm = np.array([self.objs.pmra, self.objs.pmdec]) - cen_pm
+		#9/27/20: back to absolute (not relative) motion
+		obj_pm = np.array([self.objs.pmra, self.objs.pmdec]) #- cen_pm
 
 		#calculate phi, the angle of the star wrt. axis RA=0, this would be theta if we were using polar coords
 		phi = np.arctan2(obj_radec[1],obj_radec[0])
@@ -517,12 +520,12 @@ class gaiastars():
 		lower = np.where(lower < 0, lower+2*np.pi, lower)
 
 		#calculate the PM direction and adjust to positive angle
-		pm_reldir = np.arctan2(obj_relpm[1], obj_relpm[0])
-		pm_reldir = np.where(pm_reldir < 0, pm_reldir+2.0*np.pi, pm_reldir)
-		assert np.all(np.logical_and(pm_reldir >= 0, pm_reldir <= 2.0*np.pi))
+		pm_dir = np.arctan2(obj_pm[1], obj_pm[0])
+		pm_dir = np.where(pm_dir < 0, pm_dir+2.0*np.pi, pm_dir)
+		assert np.all(np.logical_and(pm_dir >= 0, pm_dir <= 2.0*np.pi))
 
 		#test whether PM direction within bounds
-		inbounds = np.logical_and(pm_reldir >= lower, pm_reldir <= upper)
+		inbounds = np.logical_and(pm_dir >= lower, pm_dir <= upper)
 
 		#test distance constraint
 		within_dist = np.logical_and(self.objs.r_est >= cen_dist*(1-center_dist_tol),
@@ -531,22 +534,28 @@ class gaiastars():
 		# put the constrainsts together
 		points_to = np.logical_and(inbounds, within_dist)
 
-		#############
-		# calculate magnitude of pm and how long it should've taken to move to star's position
-		#############
+		# calculate how many years it took for the star to be this far from cluster center
+        
 
-		#distance from sun (in pc)
-		dist_from_sun = self.objs.r_est 
+		##################
+		# Trace Back Time
+		#how many years to get from cluster center to stars' current position?
+		##################
+		
+		#get angular separations, scale to distance in pc
+		coords = self.get_coords(recalc=True)
+		seps = center.separation(coords)
+		delta_x = coords.distance*np.tan(seps.radian) #delta_x in PC
+		
+		#convert proper motions (mas/year) to pc/year by scaling to distance
+		#get pm_v, differential velocity in mas for one year
+		pm_v = np.sqrt(((obj_pm-cen_pm)**2).sum(axis=0))*u.mas
 
-		#Get pm's in radians/year
-		pm_rad_radec = np.radians(obj_relpm/3.6e6) #to convert mas to degrees then to radians
-		pm_rad = np.sqrt((pm_rad_radec**2).sum(axis=0)) # radians per year
-		# convert to mas per year
-		mas_per_radian = 2.0628e8
-		pm_v = pm_rad*mas_per_radian #mas per year
+		#scale to distance (pm_v gets auto coverted to radian below)
+		vel_pc_year = coords.distance*np.tan(pm_v)*(1.0/u.year)
+		
+		trace_back_time = delta_x/vel_pc_year
 
-		#how many years to get from cluster center to current position?
-		d_years = d/(pm_v/3.6e6) #to convert mas to degrees (the units of d)
 
 		#return whole buncha stuff for debugging purposes
 		ret_df = pd.DataFrame({
@@ -562,9 +571,7 @@ class gaiastars():
 							'ObjPMDec': self.objs.pmdec,
 							'ObjRelRA': obj_radec[0],
 							'ObjRelDec': obj_radec[1],
-							'ObjRelPMRA': obj_relpm[0],
-							'ObjRelPMDec': obj_relpm[1],
-							'ObjRelPMDir': pm_reldir,
+							'ObjRPMDir': pm_dir,
 							'ObjDistCen': d,
 							'ObjVelMag':pm_v,
 							'ObjDistSun': self.objs.r_est,
@@ -575,12 +582,16 @@ class gaiastars():
 							'Inbounds': inbounds,
 							'WithinDist': within_dist,
 							'PointsTo': points_to,
-							'YrsDist': d_years},
+							'Separation': seps,
+							'delta_x': delta_x,
+							'DiffVel':pm_v,
+							'VelPCyr':vel_pc_year,
+							'TraceBackTime': trace_back_time},
 					index = pd.Index(self.objs.index, name=self.objs.index.name))
 		if allcalcs:
 			collist = ret_df.columns 
 		else:
-			collist = ['Inbounds','WithinDist','PointsTo','YrsDist']
+			collist = ['Inbounds','WithinDist','PointsTo','TraceBackTime']
 
 		if inplace:
 			self.objs = self.objs.merge(ret_df[collist],left_index=True, right_index=True)
@@ -663,9 +674,6 @@ class gaiastars():
 			index=pd.Index(self.objs.index, name=self.objs.index.name))
 
 		return tb_df
-
-
-
 
 
 def from_pickle(picklefile):
