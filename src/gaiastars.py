@@ -267,22 +267,17 @@ class gaiastars():
 		with open(picklepath,'wb') as pkl:
 			pickle.dump(self, pkl)
 		
+	def get_colors(self, absmag=True, r_est=True):
+		"""
+		Returns absolute magnitude and color for each star
+		Arguments:
+			absmag: Boolean, determines whether absolute or apparent magnitude should be return, defalut:True
+			r_est: Boolean, determines whether estimated distance (default) or parallax should be used in distance calculation
+		Returns:
+			M_G: absolute or apparent magnitude
+			BP_RP: star color
+		"""
 
-	def plot_hrdiagram(self, **kwargs):
-		ax = kwargs.pop('ax',None)
-		title = kwargs.pop('title', 'HR Diagram')
-		label = kwargs.pop('label',self.name)
-		s = kwargs.pop('s', 1) #default size = 1
-   
-		absmag = kwargs.get('absmag', True) #Absolute or Apparent magnitude?
-		r_est = kwargs.get('r_est',True) #estimated distance or calc from parallax
-		
-		if ax is None:
-			yax = plt.subplot(111)
-		else:
-			yax = ax
-			
-		
 		if r_est:
 			#use estimated distance
 			dist = self.objs.r_est 
@@ -293,12 +288,29 @@ class gaiastars():
 		distmod = 5*np.log10(dist)-5
 
 		#absolute or apparent magnitude
-		mag = self.objs.phot_g_mean_mag - (distmod if absmag else 0)
+		M_G = self.objs.phot_g_mean_mag - (distmod if absmag else 0)
 
 		#color
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
+		
+		return M_G, BP_RP
 
-		pcm = yax.scatter(BP_RP, mag, label=label, s=s, **kwargs)
+	def plot_hrdiagram(self, **kwargs):
+		ax = kwargs.pop('ax',None)
+		title = kwargs.pop('title', 'HR Diagram')
+		label = kwargs.pop('label',self.name)
+		s = kwargs.pop('s', 1) #default size = 1
+		absmag = kwargs.pop('absmag', True) #Absolute or Apparent magnitude?
+		r_est = kwargs.pop('r_est',True) #estimated distance or calc from parallax
+   
+		if ax is None:
+			yax = plt.subplot(111)
+		else:
+			yax = ax
+
+		M_G, BP_RP = self.get_colors(absmag=absmag, r_est=r_est)
+
+		pcm = yax.scatter(BP_RP, M_G, label=label, s=s, **kwargs)
 
 		if not yax.yaxis_inverted():
 			yax.invert_yaxis()
@@ -407,11 +419,17 @@ class gaiastars():
 		
 		return
 
-	def query(self, query_str):
-		mystars = gaiastars(name=self.name, description = f'{self.description} with query: {query_str}')
-		mystars.tap_query_string = self.tap_query_string
-		mystars.objs = self.objs.query(query_str)
-		return mystars
+	def query(self, query_str, inplace=False):
+		objs = self.objs.query(query_str)
+		desc = f'{self.description} with query: {query_str}'
+		if inplace:
+			self.objs=objs
+			self.description = desc
+		else:
+			mystars = gaiastars(name=self.name, description = desc)
+			mystars.tap_query_string = self.tap_query_string
+			mystars.objs = objs
+			return mystars
 	
 	def project_center_motion(self, cen_coord, return_df=True):
 		"""
