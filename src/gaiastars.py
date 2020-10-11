@@ -274,8 +274,8 @@ class gaiastars():
 			absmag: Boolean, determines whether absolute or apparent magnitude should be return, defalut:True
 			r_est: Boolean, determines whether estimated distance (default) or parallax should be used in distance calculation
 		Returns:
-			M_G: absolute or apparent magnitude
 			BP_RP: star color
+			M_G: absolute or apparent magnitude
 		"""
 
 		if r_est:
@@ -292,8 +292,8 @@ class gaiastars():
 
 		#color
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
-		
-		return M_G, BP_RP
+
+		return BP_RP, M_G
 
 	def plot_hrdiagram(self, **kwargs):
 		ax = kwargs.pop('ax',None)
@@ -308,7 +308,7 @@ class gaiastars():
 		else:
 			yax = ax
 
-		M_G, BP_RP = self.get_colors(absmag=absmag, r_est=r_est)
+		BP_RP, M_G = self.get_colors(absmag=absmag, r_est=r_est)
 
 		pcm = yax.scatter(BP_RP, M_G, label=label, s=s, **kwargs)
 
@@ -560,19 +560,15 @@ class gaiastars():
 		#how many years to get from cluster center to stars' current position?
 		##################
 		
-		#get angular separations, scale to distance in pc
-		coords = self.get_coords(recalc=True)
-		seps = center.separation(coords)
-		delta_x = coords.distance*np.tan(seps.radian) #delta_x in PC
+		#get separations in degrees, obj_radec is each object's separation from center in RA, Dec
+		delta_x = np.sqrt((obj_radec**2).sum(axis=0)) #delta_x in degrees
 		
-		#convert proper motions (mas/year) to pc/year by scaling to distance
-		#get pm_v, differential velocity in mas for one year
-		pm_v = np.sqrt(((obj_pm-cen_pm)**2).sum(axis=0))*u.mas
+		#get pm_v, differential (from center) velocity in degrees for one year
+		mas_per_degree = 3.6e6
+		pm_v = np.sqrt(((obj_pm-cen_pm)**2).sum(axis=0))/mas_per_degree
 
-		#scale to distance (pm_v gets auto coverted to radian below)
-		vel_pc_year = coords.distance*np.tan(pm_v)*(1.0/u.year)
-		
-		trace_back_time = delta_x/vel_pc_year
+		#ratio is the traceback time
+		trace_back_time = delta_x/pm_v
 
 
 		#return whole buncha stuff for debugging purposes
@@ -600,10 +596,8 @@ class gaiastars():
 							'Inbounds': inbounds,
 							'WithinDist': within_dist,
 							'PointsTo': points_to,
-							'Separation': seps,
 							'delta_x': delta_x,
 							'DiffVel':pm_v,
-							'VelPCyr':vel_pc_year,
 							'TraceBackTime': trace_back_time},
 					index = pd.Index(self.objs.index, name=self.objs.index.name))
 		if allcalcs:

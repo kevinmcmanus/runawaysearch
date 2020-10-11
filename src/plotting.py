@@ -104,8 +104,8 @@ def plot_points_to(ptr, cluster, ax):
             cellText = [
                         [f'{ptr.CenRA:.2f}',    f'{ptr.ObjRA:.2f}',    f'{ptr.ObjRelRA:.2f}'],
                         [f'{ptr.CenDec:.2f}',   f'{ptr.ObjDec:.2f}',   f'{ptr.ObjRelDec:.2f}'],
-                        [f'{ptr.CenPMRA:.4f}',  f'{ptr.ObjPMRA:.4f}',  ''],
-                        [f'{ptr.CenPMDec:.4f}', f'{ptr.ObjPMDec:.2f}', ''],
+                        [f'{ptr.CenPMRA:.4f}',  f'{ptr.ObjPMRA:.4f}',  f'{ptr.ObjPMRA-ptr.CenPMRA:.4f}'],
+                        [f'{ptr.CenPMDec:.4f}', f'{ptr.ObjPMDec:.4f}', f'{ptr.ObjPMDec-ptr.CenPMDec:.4f}'],
                         [f'{cenPMDir:.2f}',     f'{objPMDir:.2f}',     ''],
                         [f'{ptr.CenRad:.2f}',   '',                    '']
                     ],
@@ -127,10 +127,8 @@ def plot_points_to(ptr, cluster, ax):
                 ['ObjDistSun', f'{ptr.ObjDistSun:.1f}','parsec'],
                 ['WithinDist', f'{ptr.WithinDist}', ''],
                 ['PointsTo', f'{ptr.PointsTo}',''],
-                ['Separation', f'{ptr.Separation:.2f}','Degree'],
-                ['DeltaX',f'{ptr.delta_x:.2f}','Parsec'],
-                ['DiffVel',f'{ptr.DiffVel:.2f}','mas/year'],
-                ['VelPCyr',f'{ptr.VelPCyr:.2e}','pc/year'],
+                ['DeltaX',f'{ptr.delta_x:.2f}','Degree'],
+                ['DiffVel',f'{ptr.DiffVel:.2e}','Deg/yr'],
                 ['TBTime', f'{ptr.TraceBackTime:.2e}','year']
             ],
             colWidths=[0.4, 0.3,0.3],
