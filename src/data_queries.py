@@ -1,6 +1,6 @@
 
-from locate_cluser_outliers.src.gaiastars import gaiastars as gs
-=======
+#from locate_cluser_outliers.src.gaiastars import gaiastars as gs
+#=======
 #from locate_cluser_outliers.src.gaiastars import *
 # >>>>>>> 5e5c56bbad55098d47e3ec94d436ffc33017bce0
 from astroquery.simbad import Simbad

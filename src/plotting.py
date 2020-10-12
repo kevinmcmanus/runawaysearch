@@ -6,8 +6,8 @@
 #from locate_cluser_outliers.src.gaiastars import gaiastars as gs
 #from locate_cluster_outliers.src.data_quieries import *
 # =======
-from locate_cluser_outliers.src.gaiastars import gaiastars as gs
-from locate_cluster_outliers.src.data_quieries import *
+#from locate_cluser_outliers.src.gaiastars import gaiastars as gs
+#from locate_cluster_outliers.src.data_quieries import *
 # >>>>>>> master
 import matplotlib.pyplot as plt
 
@@ -104,9 +104,9 @@ def plot_points_to(ptr, cluster, ax):
             cellText = [
                         [f'{ptr.CenRA:.2f}',    f'{ptr.ObjRA:.2f}',    f'{ptr.ObjRelRA:.2f}'],
                         [f'{ptr.CenDec:.2f}',   f'{ptr.ObjDec:.2f}',   f'{ptr.ObjRelDec:.2f}'],
-                        [f'{ptr.CenPMRA:.4f}',  f'{ptr.ObjPMRA:.4f}',  f'{ptr.ObjRelPMRA:.4f}'],
-                        [f'{ptr.CenPMDec:.4f}', f'{ptr.ObjPMDec:.2f}', f'{ptr.ObjRelPMDec:.2f}'],
-                        [f'{cenPMDir:.2f}',     f'{objPMDir:.2f}',     f'{ptr.ObjRelPMDir:.2f}'],
+                        [f'{ptr.CenPMRA:.4f}',  f'{ptr.ObjPMRA:.4f}',  f'{ptr.ObjPMRA-ptr.CenPMRA:.4f}'],
+                        [f'{ptr.CenPMDec:.4f}', f'{ptr.ObjPMDec:.4f}', f'{ptr.ObjPMDec-ptr.CenPMDec:.4f}'],
+                        [f'{cenPMDir:.2f}',     f'{objPMDir:.2f}',     ''],
                         [f'{ptr.CenRad:.2f}',   '',                    '']
                     ],
             bbox=[0.0, -0.50, 1.0, 0.4])
@@ -126,10 +126,13 @@ def plot_points_to(ptr, cluster, ax):
                 ['Inbounds', f'{ptr.Inbounds}',''],
                 ['ObjDistSun', f'{ptr.ObjDistSun:.1f}','parsec'],
                 ['WithinDist', f'{ptr.WithinDist}', ''],
-                ['PointsTo', f'{ptr.PointsTo}','']
+                ['PointsTo', f'{ptr.PointsTo}',''],
+                ['DeltaX',f'{ptr.delta_x:.2f}','Degree'],
+                ['DiffVel',f'{ptr.DiffVel:.2e}','Deg/yr'],
+                ['TBTime', f'{ptr.TraceBackTime:.2e}','year']
             ],
             colWidths=[0.4, 0.3,0.3],
-            bbox=[1.05, 0.50, 0.5, 0.5])
+            bbox=[1.05, 0.0, 0.5, 1.0])
         tbl2.auto_set_font_size(False)
         tbl2.set_fontsize(12)
 
@@ -167,13 +170,11 @@ def plot_points_to(ptr, cluster, ax):
     a1 = ax.arrow(ptr.CenRA, ptr.CenDec, ptr.CenPMRA*scale/mas_per_degree,
             ptr.CenPMDec*scale/mas_per_degree, color='blue', head_width=1)
 
-    # of the differential
-    a2 = ax.arrow(ptr.ObjRA, ptr.ObjDec, ptr.ObjRelPMRA*scale/mas_per_degree,
-            ptr.ObjRelPMDec*scale/mas_per_degree, color='red', head_width=1)
+
 
     #pm_lines = [Line2D([0], [0], color='Blue'), Line2D([0],[0], color='red')]
-    pm_handles = [a1, a2]
-    pm_labels = ['Proper Motion','Differential Motion']
+    pm_handles = [a1]
+    pm_labels = ['Proper Motion']
     #add to the legend
     handles, labels = ax.get_legend_handles_labels()
     handles += pm_handles
