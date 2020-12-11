@@ -18,22 +18,51 @@ from matplotlib.pyplot import cm
 
 class gaiastars():
 	
-	#default tables and columns:
-	gaia_column_dict ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
-											'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
-											'e_bp_min_rp_val', 'a_g_val'],
-				'external.gaiadr2_geometric_distance': ['r_est']}
-	
-	gaia_source_constraints = ' AND '.join([
-		'gaiadr2.gaia_source.parallax_over_error > 10',
-		'gaiadr2.gaia_source.phot_g_mean_flux_over_error>50',
-		'gaiadr2.gaia_source.phot_rp_mean_flux_over_error>20',
-		'gaiadr2.gaia_source.phot_bp_mean_flux_over_error>20',
-		'gaiadr2.gaia_source.phot_bp_rp_excess_factor < 1.3+0.06*power(gaiadr2.gaia_source.phot_bp_mean_mag-gaiadr2.gaia_source.phot_rp_mean_mag,2)',
-		'gaiadr2.gaia_source.phot_bp_rp_excess_factor > 1.0+0.015*power(gaiadr2.gaia_source.phot_bp_mean_mag-gaiadr2.gaia_source.phot_rp_mean_mag,2)',
-		'gaiadr2.gaia_source.visibility_periods_used>8',
-		'gaiadr2.gaia_source.astrometric_chi2_al/(gaiadr2.gaia_source.astrometric_n_good_obs_al-5)<1.44*greatest(1,exp(-0.4*(gaiadr2.gaia_source.phot_g_mean_mag-19.5)))'])
+	#default tables and columns (they differ from one releases to the next):
+	#dr2
+	gaia_column_dict_gaiadr2 ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
+								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
+								'e_bp_min_rp_val', 'a_g_val'],
+			'external.gaiadr2_geometric_distance': ['r_est']}
+	#early release dr3
+	gaia_column_dict_gaiaedr3 ={'gaiaedr3.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
+								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag']}
 
+
+	
+	def gaia_column_dict(self, schema):
+		
+		if schema == 'gaiadr2':
+			coldict = self.gaia_column_dict_gaiadr2
+		elif schema=='gaiaedr3':
+			coldict = self.gaia_column_dict_gaiaedr3
+		else:
+			errorstr = f'Invalid schema specification: {schema}'
+			raise ValueError(errorstr)
+
+		return coldict
+
+	gaia_source_constraints = [
+		'{schema}.gaia_source.parallax_over_error > 10',
+		'{schema}.gaia_source.phot_g_mean_flux_over_error>50',
+		'{schema}.gaia_source.phot_rp_mean_flux_over_error>20',
+		'{schema}.gaia_source.phot_bp_mean_flux_over_error>20',
+		'{schema}.gaia_source.phot_bp_rp_excess_factor < 1.3+0.06*power({schema}.gaia_source.phot_bp_mean_mag-{schema}.gaia_source.phot_rp_mean_mag,2)',
+		'{schema}.gaia_source.phot_bp_rp_excess_factor > 1.0+0.015*power({schema}.gaia_source.phot_bp_mean_mag-{schema}.gaia_source.phot_rp_mean_mag,2)',
+		'{schema}.gaia_source.visibility_periods_used>8',
+		'{schema}.gaia_source.astrometric_chi2_al/({schema}.gaia_source.astrometric_n_good_obs_al-5)<1.44*greatest(1,exp(-0.4*({schema}.gaia_source.phot_g_mean_mag-19.5)))'
+		]
+
+
+	def set_gaia_source_constraints(self, strlist):
+		previous_constraints = self.gaia_source_constraints
+		self.gaia_source_constraints = strlist
+		return previous_constraints
+
+	def get_gaia_source_constraints(self, schema):
+		constraints = ' AND '.join([s.format(schema=schema) for s in self.gaia_source_constraints])
+		return constraints
+		
 	def __init__(self, **kwargs):
 		self.name=kwargs.pop('name',None)
 		self.description = kwargs.pop('description', None)
@@ -112,7 +141,7 @@ class gaiastars():
 			Nothing, updates self.objs with panda query results
 		"""
 		# input parameters in degrees:
-		ra_ = ra.to(u.degree); dec_= dec.to(u.degree);
+		ra_ = ra.to(u.degree); dec_= dec.to(u.degree)
 		ra_ext_ = ra_ext.to(u.degree); dec_ext_ = dec_ext.to(u.degree)
 
 		#construct minimal box search query filter (column_dict needs to deliver an ra and dec)
@@ -131,7 +160,6 @@ class gaiastars():
 			ra, dec: astropy.quantity.Angle objects specifying coords of center of cone seacrh
 			rad: astropy.quantity.Angle object specifying the angular radius of the cone search
 			column_dict: optional dictionary of form: <gaiatable>:[column list]; default:gaiastars.gaia_column_dict
-			constraints: optional string specifying query constraints; default:gaiastars.gaia_source_contraints
 		Returns:
 			Nothing, updates self.objs with pandas query results
 		"""
@@ -152,16 +180,16 @@ class gaiastars():
 		"""
 		
 		#use default table columns and constraints?
-		column_dict = kwargs.pop('column_dict', self.gaia_column_dict)
-		constraints = kwargs.pop('source_constraints', self.gaia_source_constraints)
+		schema = kwargs.pop('schema', 'gaiaedr3')
+		column_dict = kwargs.pop('column_dict', self.gaia_column_dict(schema=schema))
 		parallax = kwargs.pop('parallax', None)
 
 		col_list = self._get_col_list( column_dict)
 		db_source = self._get_db_source(column_dict, join_type='INNER JOIN')
 
-		#tack the constraints onto the query filter if necessary
-		if constraints != 'None':
-			query_filter = f'{query_filter} AND {constraints}'
+		#tack the constraints onto the query filter
+		constraints = self.get_gaia_source_constraints(schema=schema)
+		query_filter = f'{query_filter} AND {constraints}'
 
 		#deal with parallax constraint:
 		if parallax is not None:
@@ -202,9 +230,18 @@ class gaiastars():
 
 		#get the results as pandas dataframe and index it
 		self.objs = job.get_results().to_pandas().set_index('source_id')
+		
+		# hacks for edr3
+		if not ('r_est' in self.objs.columns):
+			if 'parallax' in self.objs.columns:
+				self.objs['r_est'] = 1000.0/self.objs.parallax
+		self.objs.rename(columns={'dr2_radial_velocity':'radial_velocity',
+								 'dr2_radial_velocity_error':'radial_velocity_error'}, inplace=True)
 
 
-	def from_source_idlist(self, source_idlist, column_dict=None, query_type='async'):
+	def from_source_idlist(self, source_idlist, column_dict=None,
+				schema='gaiaedr3',
+				query_type='async'):
 		"""
 		Queries Gaia Archive for specified records; returns columns as spec'd in column_dict
 		Arguments:
@@ -215,29 +252,22 @@ class gaiastars():
 			Nothing; updates self in place with pandas DataFrame in property self.objs
 		"""
 		#use default column list if one wasn't passed in
-		coldict = self.gaia_column_dict if column_dict is None else column_dict
+		coldict = self.gaia_column_dict(schema=schema) if column_dict is None else column_dict
 
 		#need tempfile for source id list
-		fh =  tempfile.mkstemp()
-		os.close(fh[0]) #fh[0] is the file descriptor; fh[1] is the path
-
+		upload_tablename, upload_resource, sidcol = source_id_to_xmlfile(source_idlist)
 		try:
-			#xml-ify the source_idlist to a file
-			sidcol = 'source_id'
-			tbl = Table({sidcol:source_idlist})
-			tbl.write(fh[1], table_id='source_idlist', format='votable', overwrite=True)
-			
 			#build the query:
 			col_list = self._get_col_list( coldict)
 			db_source = self._get_db_source({'tap_upload.source_idlist':[], **coldict})
 			query_str = f'SELECT {col_list} FROM {db_source}'
 
 			#do the deed
-			self.gaia_query(query_str, query_type, upload_resource=fh[1], upload_tablename='source_idlist')
+			self.gaia_query(query_str, query_type, upload_resource=upload_resource, upload_tablename=upload_tablename)
 
 		finally:
 			#ditch the temporary file
-			os.remove(fh[1])           
+			os.remove(upload_resource)           
 	
 	def merge(self, right):
 		"""
@@ -282,8 +312,8 @@ class gaiastars():
 			#use estimated distance
 			dist = self.objs.r_est 
 		else:
-			#use parallax to calc distance
-			dist = coord.Distance(parallax=u.Quantity(np.array(self.objs.parallax)*u.mas),allow_negative=True)
+			#use parallax (assumed to be in MAS) to calc distance
+			dist = 1000/self.objs.parallax
 
 		distmod = 5*np.log10(dist)-5
 
@@ -318,8 +348,8 @@ class gaiastars():
 		#yax.set_ylim(20, -1)
 
 		yax.set_title(title)
-		yax.set_ylabel(r'$M_G$',fontsize=14)
-		yax.set_xlabel(r'$G_{BP}\ -\ G_{RP}$', fontsize=14)
+		yax.set_ylabel(r'$M_G$')
+		yax.set_xlabel(r'$G_{BP}\ -\ G_{RP}$')
 		if ax is None:
 			yax.legend()
 			
@@ -360,11 +390,15 @@ class gaiastars():
 		#computes and caches sky coordinates for the objects
 		#set recalc=True to force recalculation
 		if self.coords is None or recalc:
-
-			if default_rv is not None:
-				rv = default_rv
+			if default_rv is None:
+				rv = None
+			elif isinstance(default_rv, bool):
+				rv = np.array(self.objs.radial_velocity)*u.km/u.s if default_rv else None
 			else:
-				rv = np.array(self.objs.radial_velocity)*u.km/u.s
+				#use the reported rv if available otherwise the default rv
+				rv = np.where(np.isfinite(self.objs.radial_velocity),
+							  self.objs.radial_velocity,
+							  default_rv)*u.km/u.s
 
 			self.coords = coord.SkyCoord(ra=np.array(self.objs.ra)*u.degree,
 				   dec=np.array(self.objs.dec)*u.degree,
@@ -492,6 +526,36 @@ class gaiastars():
 			retval = np.array([pmra, pmdec]).T #transpose to nbojs x 2
 
 		return (retval)
+	
+	def motion_direction(self, point, inplace=False, dt=10*u.year):
+		"""
+		Computes whether the individual stars are moving toward or away from the point
+		Arguments:
+			point: astropy.SkyCoord object
+			dt: time delta over which to calculate the direction of movement, positive=> forward in time
+			inplace: whehter the objs member will be updated
+		Returns:
+			pandas series, index same as objs, values: -1: => movement toward point, 1 => movement away
+		"""
+		
+		#get the current separation
+		coords_now = self.get_coords(recalc=True)
+		seps_now = point.separation(coords_now)
+		
+		#future separation
+		point_then = point.apply_space_motion(dt=dt)
+		coords_then = coords_now.apply_space_motion(dt=dt)
+		seps_then = point_then.separation(coords_then)
+		
+		direction = np.sign(seps_then-seps_now)
+		
+		if inplace:
+			self.objs['Direction'] = direction
+			retser = None
+		else:
+			retser = pd.Series(direction, index=pd.Index(self.objs.index, name = self.objs.index.name))
+
+		return retser
 
 	def points_to(self, center, center_radius, center_dist_tol = 0.25, inplace=False, allcalcs=True):
 		"""
@@ -518,28 +582,27 @@ class gaiastars():
 
 		#each object's differential motion wrt center:
 		#9/27/20: back to absolute (not relative) motion
-		obj_pm = np.array([self.objs.pmra, self.objs.pmdec]) #- cen_pm
+		#11/27/20: back to differential motion
+		obj_pm = np.array([self.objs.pmra, self.objs.pmdec]) - cen_pm
 
-		#calculate phi, the angle of the star wrt. axis RA=0, this would be theta if we were using polar coords
-		phi = np.arctan2(obj_radec[1],obj_radec[0])
-		#arctan2 returns negative angles, so put into radians ccw from RA=0
-		phi = np.where(phi<0, phi+2.0*np.pi, phi)
+		#calculate phi, the angle of the star wrt. RA axis; this would be called theta if we were using polar coords
+		phi = np.remainder(np.arctan2(obj_radec[1],obj_radec[0])+2*np.pi, 2*np.pi)
 
-		#calculate distance from center for each star (distance in ra/dec space)
+		#calculate distance from center for each star (distance in ra/dec space, so distance in degrees)
 		d = np.sqrt((obj_radec**2).sum(axis=0))
 
 		#calculate theta: angle btwn center line to star and outer edge of cluster
+		#both center_radius and d are in units of degrees, so divide to get the tangent
 		theta = np.arctan(center_radius/d)
 		assert np.all(np.logical_and(theta >= 0, theta <= np.pi/2.0))
 
 		#calculate upper and lower bounds of PM direction, considering phi and wrapping
-		upper = (phi + theta) % (2.0*np.pi)
-		lower = phi - theta
-		lower = np.where(lower < 0, lower+2*np.pi, lower)
+		upper = np.remainder((phi + theta)+2.0*np.pi, 2.0*np.pi)
+		lower = np.remainder((phi - theta)+2.0*np.pi, 2.0*np.pi)
 
 		#calculate the PM direction and adjust to positive angle
-		pm_dir = np.arctan2(obj_pm[1], obj_pm[0])
-		pm_dir = np.where(pm_dir < 0, pm_dir+2.0*np.pi, pm_dir)
+		pm_dir = np.remainder(np.arctan2(obj_pm[1], obj_pm[0])+2*np.pi, 2*np.pi)
+	
 		assert np.all(np.logical_and(pm_dir >= 0, pm_dir <= 2.0*np.pi))
 
 		#test whether PM direction within bounds
@@ -553,8 +616,7 @@ class gaiastars():
 		points_to = np.logical_and(inbounds, within_dist)
 
 		# calculate how many years it took for the star to be this far from cluster center
-        
-
+		
 		##################
 		# Trace Back Time
 		#how many years to get from cluster center to stars' current position?
@@ -565,7 +627,7 @@ class gaiastars():
 		
 		#get pm_v, differential (from center) velocity in degrees for one year
 		mas_per_degree = 3.6e6
-		pm_v = np.sqrt(((obj_pm-cen_pm)**2).sum(axis=0))/mas_per_degree
+		pm_v = np.sqrt((obj_pm**2).sum(axis=0))/mas_per_degree
 
 		#ratio is the traceback time
 		trace_back_time = delta_x/pm_v
@@ -585,7 +647,9 @@ class gaiastars():
 							'ObjPMDec': self.objs.pmdec,
 							'ObjRelRA': obj_radec[0],
 							'ObjRelDec': obj_radec[1],
-							'ObjRPMDir': pm_dir,
+							'ObjRelPMRA': obj_pm[0],
+							'ObjRelPMDec': obj_pm[1],
+							'ObjRelPMDir': pm_dir,
 							'ObjDistCen': d,
 							'ObjVelMag':pm_v,
 							'ObjDistSun': self.objs.r_est,
@@ -629,7 +693,7 @@ class gaiastars():
 
 		# get the ra's and dec's of the two objects at time t
 		# relying on astropy.units to do proper conversion to degrees
-		o_ra =  (o.ra  + o.pm_ra_cosdec*t).wrap_at(360*u.degree);
+		o_ra =  (o.ra  + o.pm_ra_cosdec*t).wrap_at(360*u.degree)
 		c_ra  = (c.ra + c.pm_ra*t).wrap_at(360*u.degree)
 
 		o_dec = coord.Angle(fix_lat((o.dec + o.pm_dec*t).radian % (2.0*np.pi))*u.radian)
@@ -700,6 +764,46 @@ def from_pickle(picklefile):
 		
 	return my_fs
 
+def source_id_to_xmlfile(source_idlist, sidcol='source_id', table_id='source_idlist'):
+	#need tempfile for source id list
+	fh =  tempfile.mkstemp()
+	os.close(fh[0]) #fh[0] is the file descriptor; fh[1] is the path
+
+	#xml-ify the source_idlist to a file
+	tbl = Table({sidcol:source_idlist})
+	tbl.write(fh[1], table_id=table_id, format='votable', overwrite=True)
+
+	return table_id, fh[1], sidcol
+			
+
+def gaiadr2xdr3(source_idlist,nearest=True):
+	"""
+	returns the dr2 to dr3 cross matches for the given source_idlist
+	"""
+
+	upload_tablename, upload_resource, sidcol = source_id_to_xmlfile(source_idlist)
+
+	query_str = ' '.join([f'SELECT tu.{sidcol}, dr2.*',
+				f'from tap_upload.{upload_tablename} tu left join gaiaedr3.dr2_neighbourhood dr2',
+				f'on tu.{sidcol} = dr2.dr2_source_id'])
+	try:
+		job = Gaia.launch_job_async(query=query_str,
+								upload_resource=upload_resource,
+								upload_table_name=upload_tablename)
+		
+		df = job.get_results().to_pandas()
+	finally:
+		os.remove(upload_resource)
+	
+	if nearest:
+		#just return the nearest dr3 source id based on angular distance
+		ret_df = df.sort_values(['dr2_source_id','angular_distance']).groupby('dr2_source_id',
+					as_index=False).first().set_index('source_id')
+	else:
+		ret_df = df.set_index('source_id')
+
+	return ret_df
+
 if __name__ == '__main__':
 
 	fs = gaiastars(name='test cone search', description='test of the new capabilities of GaiaStars')
@@ -711,8 +815,11 @@ if __name__ == '__main__':
 
 	id_list = list(fs.objs.index)
 	fs2 = gaiastars(name='test id search')
-	fs2.from_source_idlist(id_list)
+	fs2.from_source_idlist(id_list, schema='gaiadr2')
 	print(fs2)
+
+	df = gaiadr2xdr3(id_list)
+	print(df.head())
 
 	fs3 = gaiastars(name='test missing id handling')
 	idlist2 = id_list[0:5]+[0,1234] #invalid source ids
