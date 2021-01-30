@@ -105,6 +105,38 @@ def formatSIMBADtoGAIA(simbad_table, name_mapper=None):
     
     return(my_table)
 
+#cluster info
+def getClusterInfo():
+    """
+    returns astropy table with info for the clusters in Gaia paper: http://simbad.u-strasbg.fr/simbad/sim-ref?bibcode=2018A%26A...616A..10G (Table1a: Nearby Open Clusters)
+    """
+    #from readme file at https://cdsarc.unistra.fr/ftp/J/A+A/616/A10/ReadMe
+
+    colnames = ['cluster', 'ra', 'dec', 'U', 'e_U', 'V', 'e_V', 'W', 'e_W',
+            'cUV', 'cUW', 'cVW', 'ra_conv', 'dec_conv', 'plx',
+                'e_plx', 'pmra','e_pmra','pmdec','e_pmdec',
+                'NMemb','uwsd','RV','e_RV']
+
+    path = 'ftp://cdsarc.u-strasbg.fr/pub/cats/J/A+A/616/A10/tablea3.dat'
+    table3_df = pd.read_csv(path,
+                        delim_whitespace=True,
+                        header=None, index_col=None, names=colnames)
+    table3 = Table.from_pandas(table3_df)
+    table3.add_index('cluster')
+
+    cluster_coords = SkyCoord(ra=table3['ra']*u.degree,
+                             dec = table3['dec']*u.degree,
+                             distance = 1000/table3['plx']*u.pc,
+                             pm_ra_cosdec = table3['pmra']*u.mas/u.year,
+                             pm_dec = table3['pmdec']*u.mas/u.year,
+                             radial_velocity=table3['RV']*u.km/u.second)
+
+    table3['coords'] = cluster_coords
+
+    return table3
+
+    
+
 #function for getting data on the GAIA known cluster members as defined by this paper http://simbad.u-strasbg.fr/simbad/sim-ref?bibcode=2018A%26A...616A..10G
 def getGAIAKnownMembers(name_mapper=None):
     """
@@ -147,6 +179,10 @@ if __name__ == '__main__':
         'NGC 2451A': 'NGC2451'
     }
  
+    print('\n------------------Test GetClusterInfo----------------')
+    cluster_info = getClusterInfo()
+    print(cluster_info)
+    print(cluster_info.loc['Pleiades']['coords'])
 
     print('\n------------------Test querySIMBAD ----------------')
     simbad_info = querySIMBAD(name_mapper)
