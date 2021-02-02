@@ -18,7 +18,7 @@ from matplotlib.pyplot import cm
 
 class gaiastars():
 	
-	#default tables and columns (they differ from one releases to the next):
+	#default tables and columns (they differ from one release to the next):
 	#dr2
 	gaia_column_dict_gaiadr2 ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
 								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
@@ -413,12 +413,16 @@ class gaiastars():
 			 recalc, default_rv)
 		return self.coords
 
-	def maxsep(self):
-		##Todo allow a center to be passed in
+	def maxsep(self, center=None):
 		#computes maximum separation from mean of objects
-		ra_mean = self.objs.ra.mean()*u.degree
-		dec_mean = self.objs.dec.mean()*u.degree
-		c_mean=coord.SkyCoord(ra=ra_mean, dec=dec_mean)
+		if center is None:
+			#calculate center from mean of members
+			ra_mean = self.objs.ra.mean()*u.degree
+			dec_mean = self.objs.dec.mean()*u.degree
+			c_mean=coord.SkyCoord(ra=ra_mean, dec=dec_mean)
+		else:
+			#use the center passed in
+			c_mean = center
 		seps = c_mean.separation(self.get_coords())
 		return seps.max()
 
@@ -454,7 +458,7 @@ class gaiastars():
 		return
 
 	def query(self, query_str, inplace=False):
-		objs = self.objs.query(query_str)
+		objs = self.objs.query(query_str).copy()
 		desc = f'{self.description} with query: {query_str}'
 		if inplace:
 			self.objs=objs
@@ -556,6 +560,17 @@ class gaiastars():
 			retser = pd.Series(direction, index=pd.Index(self.objs.index, name = self.objs.index.name))
 
 		return retser
+	
+	def travel_time(self, center, inplace=False, allcalcs=True):
+		"""
+		Calculates the travel time needed for each star to achieve current separation from Center
+		Args:
+			self: Gaia stars object populated stars (objs member)
+			center: astropy.Skycoord instance of center
+		Returns:
+			
+		"""
+		pass
 
 	def points_to(self, center, center_radius, center_dist_tol = 0.25, inplace=False, allcalcs=True):
 		"""
@@ -570,110 +585,98 @@ class gaiastars():
 		Returns:
 			pandas series of booleans, index matching that of self.objs            
 		"""
-		#get necessary measures into numpy arrays 
-		cen_radec = np.array([center.ra.value, center.dec.value]).reshape(2,1)
-		cen_dist = center.distance.value
-		#get the center's motions,  adjust for cos(dec), as gaia pm's include this
-		cen_pm = np.array([center.pm_ra.value*np.cos(center.dec.radian), center.pm_dec.value]).reshape(2,1)
-
-		#move the reference frame to cluster center (objects on low-order dimension)
-		obj_radec_abs = np.array([self.objs.ra, self.objs.dec])
-		obj_radec = obj_radec_abs - cen_radec
-
-		#each object's differential motion wrt center:
-		#9/27/20: back to absolute (not relative) motion
-		#11/27/20: back to differential motion
-		obj_pm = np.array([self.objs.pmra, self.objs.pmdec]) - cen_pm
-
-		#calculate phi, the angle of the star wrt. RA axis; this would be called theta if we were using polar coords
-		phi = np.remainder(np.arctan2(obj_radec[1],obj_radec[0])+2*np.pi, 2*np.pi)
-
-		#calculate distance from center for each star (distance in ra/dec space, so distance in degrees)
-		d = np.sqrt((obj_radec**2).sum(axis=0))
-
-		#calculate theta: angle btwn center line to star and outer edge of cluster
-		#both center_radius and d are in units of degrees, so divide to get the tangent
-		theta = np.arctan(center_radius/d)
-		assert np.all(np.logical_and(theta >= 0, theta <= np.pi/2.0))
-
-		#calculate upper and lower bounds of PM direction, considering phi and wrapping
-		upper = np.remainder((phi + theta)+2.0*np.pi, 2.0*np.pi)
-		lower = np.remainder((phi - theta)+2.0*np.pi, 2.0*np.pi)
-
-		#calculate the PM direction and adjust to positive angle
-		pm_dir = np.remainder(np.arctan2(obj_pm[1], obj_pm[0])+2*np.pi, 2*np.pi)
-	
-		assert np.all(np.logical_and(pm_dir >= 0, pm_dir <= 2.0*np.pi))
-
-		#test whether PM direction within bounds
-		inbounds = np.logical_and(pm_dir >= lower, pm_dir <= upper)
-
-		#test distance constraint
-		within_dist = np.logical_and(self.objs.r_est >= cen_dist*(1-center_dist_tol),
-									 self.objs.r_est <= cen_dist*(1+center_dist_tol))
-
-		# put the constrainsts together
-		points_to = np.logical_and(inbounds, within_dist)
-
-		# calculate how many years it took for the star to be this far from cluster center
+		objs = self.objs
+		rad_delta = np.radians(objs.dec)
+		sin_delta = np.sin(rad_delta)
+		cos_delta = np.cos(rad_delta)
 		
-		##################
-		# Trace Back Time
-		#how many years to get from cluster center to stars' current position?
-		##################
+		######### determine travel time for current separation of stars from center ########
+		# get theta, angle btwn LOS to star and LOS to center
+		# compute theta as great circle distance (theta in radians)
+		theta = np.arccos(np.sin(center.dec.radian)*sin_delta +
+					np.cos(center.dec.radian)*cos_delta*np.cos(center.dec.radian - rad_delta))
 		
-		#get separations in degrees, obj_radec is each object's separation from center in RA, Dec
-		delta_x = np.sqrt((obj_radec**2).sum(axis=0)) #delta_x in degrees
+		#distance from center to stars using law of cosines
+		cen_dist = np.sqrt(objs.r_est**2 + center.distance.value**2 -
+					 2*objs.r_est*center.distance.value*np.cos(theta))
 		
-		#get pm_v, differential (from center) velocity in degrees for one year
+		#calculate beta, angle btwn the (LOS to the stars and the LOS from star to cluster) - 90 degrees
+		beta = np.arccos(center.distance*np.sin(theta)/cen_dist)
+
+		#center pm_ra may or may not include cos(dec), but needs to for purpposes here
+		cen_pm_ra_cosdec = center.pm_ra_cosdec.value if hasattr(center, 'pm_ra_cosdec') else center.pm_ra.value*np.cos(center.dec)
+
+		#proper motions in center's rest frame: (2d array: {pm_ra, pm_dec} x N)
+		#note pm_ra includes cos(dec) term per gaia practice
+		pm = np.array([objs.pmra, objs.pmdec]) - np.array([cen_pm_ra_cosdec, center.pm_dec.value]).reshape(2,1)
+
+		#project pm onto LOS btwn stars and center
+		proj_pm = pm/np.vstack([np.cos(beta), np.cos(beta)])
+
+		# magnitude of projected proper motion: (in mas/year)
+		mag_ppm = np.sqrt((proj_pm**2).sum(axis=0))
+
+		#convert to radians per year
 		mas_per_degree = 3.6e6
-		pm_v = np.sqrt((obj_pm**2).sum(axis=0))/mas_per_degree
+		mag_ppm_r = np.radians(mag_ppm/mas_per_degree)
 
-		#ratio is the traceback time
-		trace_back_time = delta_x/pm_v
+		#convert the magnitude to pc per year
+		mag_ppm_pc = mag_ppm_r*objs.r_est
 
+		#compute travel time in years
+		travel_time = cen_dist/mag_ppm_pc
+		
+		####### determine whether stars' motions point back to center #########
+		# calculate phi: angle btwn outer edge of cluster+search radius, star(the vertex) and cluster center
+		heights = objs.r_est*np.radians(center_radius)
+		phi = np.arctan(heights/cen_dist)
 
-		#return whole buncha stuff for debugging purposes
-		ret_df = pd.DataFrame({
-							'CenRA': cen_radec[0,0],
-							'CenDec': cen_radec[1,0],
-							'CenRad': center_radius,
-							'CenPMRA': cen_pm[0,0],
-							'CenPMDec': cen_pm[1,0],
-							'CenDist': cen_dist,
-							'ObjRA':obj_radec_abs[0],
-							'ObjDec': obj_radec_abs[1],
-							'ObjPMRA': self.objs.pmra,
-							'ObjPMDec': self.objs.pmdec,
-							'ObjRelRA': obj_radec[0],
-							'ObjRelDec': obj_radec[1],
-							'ObjRelPMRA': obj_pm[0],
-							'ObjRelPMDec': obj_pm[1],
-							'ObjRelPMDir': pm_dir,
-							'ObjDistCen': d,
-							'ObjVelMag':pm_v,
-							'ObjDistSun': self.objs.r_est,
-							'Phi': phi,
-							'Theta': theta,
-							'Upper': upper,
-							'Lower': lower,
-							'Inbounds': inbounds,
-							'WithinDist': within_dist,
-							'PointsTo': points_to,
-							'delta_x': delta_x,
-							'DiffVel':pm_v,
-							'TraceBackTime': trace_back_time},
-					index = pd.Index(self.objs.index, name=self.objs.index.name))
-		if allcalcs:
-			collist = ret_df.columns 
-		else:
-			collist = ['Inbounds','WithinDist','PointsTo','TraceBackTime']
+		# calculate iota: angle of center in star's reference frame
+		pi2 = 2.0*np.pi
+		delta_radec = np.array([center.ra.to_value(u.degree), center.dec.to_value(u.degree)]).reshape(2,1)-np.array([objs.ra, objs.dec])
+		iota = np.remainder(np.arctan2(delta_radec[1], delta_radec[0])+pi2, pi2)
 
+		# calculate zeta: angle of pm from stars but reversed to point backwards possibly to center
+		zeta = np.remainder((np.arctan2(objs.pmdec, objs.pmra)-np.pi)+pi2,pi2)
+
+		#boundaries that the pm angle must fall between:
+		upper = np.remainder(iota+phi+pi2, pi2)
+		lower = np.remainder(iota-phi+pi2, pi2)
+
+		points_to = np.logical_and(zeta >= lower, zeta <= upper)
+
+		#build up the return value
+		ret_df = pd.DataFrame({'theta':theta,
+								'cen_dist':cen_dist,
+								'beta': beta,
+								'cen_pm_ra_cosdec': cen_pm_ra_cosdec,
+								'cen_pm_dec': center.pm_dec,
+								'pm_ra_cosdec_censr':pm[0],
+								'pm_dec_censr':pm[1],
+								'proj_pmra': proj_pm[0],
+								'proj_pmdec': proj_pm[1],
+								'mag_ppm': mag_ppm,
+								'mag_ppm_r':mag_ppm_r,
+								'mag_ppm_pc': mag_ppm_pc,
+								'travel_time':travel_time,
+								'height':heights,
+								'phi':phi,
+								'delta_ra': delta_radec[0],
+								'delta_dec': delta_radec[1],
+								'iota':iota,
+								'zeta':zeta,
+								'upper':upper,
+								'lower': lower,
+								'points_to': points_to},
+				index=pd.Index(objs.index, name=objs.index.name))
+
+		cols = ret_df.columns if allcalcs else ['travel_time', 'points_to']
 		if inplace:
-			self.objs = self.objs.merge(ret_df[collist],left_index=True, right_index=True)
+			for c in cols:
+				self.objs[c] = ret_df[c]
 		else:
-			return ret_df[collist]
-
+			return ret_df[cols]
+	
 	def _trace_back_obj(self, o, c, t):
 		"""
 		computes minimum time and distance of object trajectory with that of c
