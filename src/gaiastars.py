@@ -570,7 +570,7 @@ class gaiastars():
 		Returns:
 			
 		"""
-		pass
+		return False
 
 	def points_to(self, center, center_radius, center_dist_tol = 0.25, inplace=False, allcalcs=True):
 		"""
