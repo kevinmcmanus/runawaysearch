@@ -26,7 +26,7 @@ class gaiastars():
 			'external.gaiadr2_geometric_distance': ['r_est']}
 	#early release dr3
 	gaia_column_dict_gaiaedr3 ={'gaiaedr3.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
-								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag']}
+								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'ruwe']}
 
 
 	
@@ -570,21 +570,6 @@ class gaiastars():
 		Returns:
 			
 		"""
-		return False
-
-	def points_to(self, center, center_radius, center_dist_tol = 0.25, inplace=False, allcalcs=True):
-		"""
-		for each obj in self, computes whether the obj's motion points back to the center.
-		
-		Arguments:
-			self: gaiastars instance with populated objs
-			center:  astropy.SkyCoord instance
-			center_radius: (float) angular radius of cluster in degrees
-			center_dist_tol: (float) +/- allowable fraction of distance to cluster to allow
-		
-		Returns:
-			pandas series of booleans, index matching that of self.objs            
-		"""
 		objs = self.objs
 		rad_delta = np.radians(objs.dec)
 		sin_delta = np.sin(rad_delta)
@@ -625,25 +610,6 @@ class gaiastars():
 
 		#compute travel time in years
 		travel_time = cen_dist/mag_ppm_pc
-		
-		####### determine whether stars' motions point back to center #########
-		# calculate phi: angle btwn outer edge of cluster+search radius, star(the vertex) and cluster center
-		heights = objs.r_est*np.radians(center_radius)
-		phi = np.arctan(heights/cen_dist)
-
-		# calculate iota: angle of center in star's reference frame
-		pi2 = 2.0*np.pi
-		delta_radec = np.array([center.ra.to_value(u.degree), center.dec.to_value(u.degree)]).reshape(2,1)-np.array([objs.ra, objs.dec])
-		iota = np.remainder(np.arctan2(delta_radec[1], delta_radec[0])+pi2, pi2)
-
-		# calculate zeta: angle of pm from stars but reversed to point backwards possibly to center
-		zeta = np.remainder((np.arctan2(objs.pmdec, objs.pmra)-np.pi)+pi2,pi2)
-
-		#boundaries that the pm angle must fall between:
-		upper = np.remainder(iota+phi+pi2, pi2)
-		lower = np.remainder(iota-phi+pi2, pi2)
-
-		points_to = np.logical_and(zeta >= lower, zeta <= upper)
 
 		#build up the return value
 		ret_df = pd.DataFrame({'theta':theta,
@@ -658,101 +624,109 @@ class gaiastars():
 								'mag_ppm': mag_ppm,
 								'mag_ppm_r':mag_ppm_r,
 								'mag_ppm_pc': mag_ppm_pc,
-								'travel_time':travel_time,
-								'height':heights,
-								'phi':phi,
-								'delta_ra': delta_radec[0],
-								'delta_dec': delta_radec[1],
-								'iota':iota,
-								'zeta':zeta,
-								'upper':upper,
-								'lower': lower,
-								'points_to': points_to},
+								'travel_time':travel_time},
 				index=pd.Index(objs.index, name=objs.index.name))
-
-		cols = ret_df.columns if allcalcs else ['travel_time', 'points_to']
-		if inplace:
-			for c in cols:
-				self.objs[c] = ret_df[c]
+		if allcalcs:
+			ret_cols =  list(ret_df.columns)
 		else:
-			return ret_df[cols]
-	
-	def _trace_back_obj(self, o, c, t):
+			ret_cols = ['travel_time']
+
+		if inplace:
+			for c in ret_cols:
+				self.objs[c] = ret_df[c]
+			return None
+		else:
+			return ret_df[ret_cols]		
+
+	def points_to(self, center, center_radius, inplace=False, allcalcs=True):
 		"""
-		computes minimum time and distance of object trajectory with that of c
-		Arguments:
-		o: object, SkyCoord
-		c: object, SkyCoord, presumably cluster center
-		t: time vector in years over which to perform calculations
-		Returns:
-			dict with keys: d_min, t_min and tol
-		Referenct:
-		https://arxiv.org/pdf/2005.04762.pdf 
-		"""
+		for each obj in self, computes whether the obj's motion points back to the center.
 
-		#function to constrain dec between -90 and 90 (argument in radians)
-		fix_lat = np.vectorize(lambda x:  x if x <= np.pi/2.0 else \
-			( np.pi-x if x <=3.0*np.pi/2.0 else  x-2.0*np.pi))
-
-		# get the ra's and dec's of the two objects at time t
-		# relying on astropy.units to do proper conversion to degrees
-		o_ra =  (o.ra  + o.pm_ra_cosdec*t).wrap_at(360*u.degree)
-		c_ra  = (c.ra + c.pm_ra*t).wrap_at(360*u.degree)
-
-		o_dec = coord.Angle(fix_lat((o.dec + o.pm_dec*t).radian % (2.0*np.pi))*u.radian)
-		c_dec = coord.Angle(fix_lat((c.dec + c.pm_dec*t).radian % (2.0*np.pi))*u.radian)
-
-		#sky coords at time t for both, using constant distance:
-		o_t = SkyCoord(ra=o_ra, dec=o_dec, distance=o.distance)
-		c_t = SkyCoord(ra=c_ra, dec=c_dec, distance=c.distance)
-
-		#angular separation as function of time
-		sep = o_t.separation(c_t)
-
-		#find minimum separation and time
-		min_i = sep.argmin()
-		d_min = o_t[min_i].separation(c_t[min_i])
-		t_min = t[min_i]
-
-		#calculate the tolerance (see equation 1 in reference)
-		tol = 10+1.3*c.separation(o)/(1*u.degree)
-
-		return {"t_min":t_min, "d_min":d_min, "tol": tol,
-			 'tracesback':(d_min/(1.0*u.arcminute)) <= tol}
-
-
-
-	def traces_back(self, center, time_max=-2.0e9, time_step=0.1e9):
-		"""
-		for each obj in self, computes whether the obj's motion traces back to the center in space and time.
-		
 		Arguments:
 			self: gaiastars instance with populated objs
 			center:  astropy.SkyCoord instance
-			time_max: float, maximum time to trace back to, in years, negative number
-			time_step: float, time increments in years
-		
+			center_radius: (float) angular radius of cluster in degrees
+			center_dist_tol: (float) +/- allowable fraction of distance to cluster to allow
+
 		Returns:
-			pandas dataframe, same rows as self.objs, columns: d_min, t_min, tol, tracesback           
+			pandas series of booleans, index matching that of self.objs            
 		"""
-		#timeframe (round out to make closed interval [time_max,0] evenly space by time_step)
-		t = np.linspace(time_max, 0, int((abs(time_max)+time_step)/time_step))*u.year
-		
-		#object coordinates
-		obj_coords = self.get_coords()
+		objs = self.objs
 
-		# in future, transform to local standard of rest:
-		#transform to default lsr frame
-		#obj_coords_lsr = obj_coords.transform_to(coords.lsr)
-		#center_lsr = center.transform_to(coords.lsr)
-		obj_coords_lsr = obj_coords
-		center_lsr = center
+		def normalize_angle(ang):
+			return np.remainder(ang+2.0*np.pi, 2.0*np.pi)
 
-		#calculate traceback for each star:
-		tb_df = pd.DataFrame([self._trace_back_obj(o_lsr, center_lsr, t) for o_lsr in obj_coords_lsr],
-			index=pd.Index(self.objs.index, name=self.objs.index.name))
+		#get some radians and co-latitudes for the stars and center
+		s_rad_delta = np.radians(objs.dec)
+		s_colat = np.pi/2.0 - s_rad_delta
+		s_sin_colat = np.sin(s_colat)
+		s_cos_colat = np.cos(s_colat)
 
-		return tb_df
+		c_rad_delta = center.dec.radian
+		c_colat = np.pi/2.0 - c_rad_delta
+		c_sin_colat =  np.sin(c_colat)
+		c_cos_colat = np.cos(c_colat)
+
+		#cosine of differenece in RA:
+		cos_delta_ra = np.cos(np.radians(objs.ra - center.ra.degree))
+
+		# Algorithm:
+		#1. Calculate theta, spherical angle star -> cluster wrt. star's meridian
+		#2. Calculate gamma: spherical angle btwn star-cluster line of site and search radius around cluster
+		#3. Calculate phi_prime: opposite of direction of star's PM wrt cluster standard of rest.
+		#4. Test wheter theta-gamma <= phi_prime <= theta+gamma
+
+		####### determine whether stars' motions point back to center #########
+		# 1. Calculate theta: spherical angle great circle containing star and cluster
+
+		#1a: Calc. great circle distance in radians star-> cluster
+		cen_dist = np.arccos(s_cos_colat*c_cos_colat + s_sin_colat*c_sin_colat*cos_delta_ra)
+		cen_dist = normalize_angle(cen_dist)
+		cos_cen_dist = np.cos(cen_dist)
+		sin_cen_dist = np.sin(cen_dist)
+
+		#1b: Given the cendist, calculate theta using law of cosines
+		theta = (c_cos_colat - cos_cen_dist*s_cos_colat)/(sin_cen_dist*s_sin_colat)
+
+		#2: Calculate gamma, spherical angle between star-cluster los and search radius
+		#2a. Calculate c: length of arc from outer edge of cluster to center of star
+		cos_center_radius = np.cos(np.radians(center_radius))
+		cos_c = (cos_cen_dist*cos_center_radius)
+		c = np.arccos(cos_c)
+		sin_c = np.sin(c)
+
+		#2b. Calculate gamma
+		gamma = np.arccos((cos_center_radius-cos_cen_dist*cos_c)/(sin_cen_dist*sin_c))
+
+		#3: calculate phi_prime: opposite direction of star's motion, in cluster reference frame
+		delta_pm_ra = objs.pmra - center.pm_ra_cosdec.value
+		delta_pm_dec = objs.pmdec - center.pm_dec.value
+		pm_dir = np.arctan2(delta_pm_ra, delta_pm_dec)
+		#need opposite direction, so subtract off pi
+		pm_dir_prime = pm_dir - np.pi
+		pm_dir_prime = normalize_angle(pm_dir_prime)
+
+		#4: calculate points_to
+		points_to = np.logical_and(theta-gamma <= pm_dir_prime, pm_dir_prime <= theta+gamma)
+
+		#build up return value
+		ret_df = pd.DataFrame({'cen_dist':cen_dist,
+								'theta':theta,
+								'c': np.arccos(cos_c),
+								'gamma': gamma,
+								'delta_pm_ra':delta_pm_ra,
+								'delta_pm_dec':delta_pm_dec,
+								'pm_dir': pm_dir,
+								'pm_dir_prime': pm_dir_prime,
+								'points_to': points_to})
+
+		cols = ret_df.columns if allcalcs else [ 'points_to']
+		if inplace:
+			for c in cols:
+				self.objs[c] = ret_df[c]
+			return None
+		else:
+			return ret_df[cols]
 
 
 def from_pickle(picklefile):
@@ -809,6 +783,11 @@ def gaiadr2xdr3(source_idlist,nearest=True):
 
 if __name__ == '__main__':
 
+	import sys
+	sys.path.append('./src')
+
+	from data_queries import  getClusterInfo, getGAIAKnownMembers
+
 	fs = gaiastars(name='test cone search', description='test of the new capabilities of GaiaStars')
 	print(fs)
 	fs.conesearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 1.0*u.degree)
@@ -816,6 +795,13 @@ if __name__ == '__main__':
 
 	print(f'There are {len(fs.objs)} field stars')
 
+	cluster_info = getClusterInfo()
+
+	fs.points_to(cluster_info.loc['Pleiades']['coords'], 6.0, inplace=True)
+	n = fs.objs.points_to.sum()
+	print(f'Number of points_to: {n}')
+
+""" 
 	id_list = list(fs.objs.index)
 	fs2 = gaiastars(name='test id search')
 	fs2.from_source_idlist(id_list, schema='gaiadr2')
@@ -836,3 +822,4 @@ if __name__ == '__main__':
 	print(fs4)
 
 	print(fs4.tap_query_string)
+ """

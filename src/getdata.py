@@ -24,7 +24,8 @@ if __name__ == "__main__":
     #add table to query to get the ruwe parameter
     default_columns = gs.gaia_column_dict_gaiaedr3.copy() #save for later
     cd = default_columns.copy()
-    cd['gaiaedr3.gaia_source'] += ['ruwe']
+    #ruwe now part of the default columns so no need to add here
+    #cd['gaiaedr3.gaia_source'] += ['ruwe']
     gs.gaia_column_dict_gaiaedr3 = cd
 
     # just deal with Pleiades and alphaPer for now
