@@ -686,7 +686,8 @@ class gaiastars():
 		sin_cen_dist = np.sin(cen_dist)
 
 		#1b: Given the cendist, calculate theta using law of cosines
-		theta = (c_cos_colat - cos_cen_dist*s_cos_colat)/(sin_cen_dist*s_sin_colat)
+		cos_theta = (c_cos_colat - cos_cen_dist*s_cos_colat)/(sin_cen_dist*s_sin_colat)
+		theta = np.arccos(cos_theta)
 
 		#2: Calculate gamma, spherical angle between star-cluster los and search radius
 		#2a. Calculate c: length of arc from outer edge of cluster to center of star
