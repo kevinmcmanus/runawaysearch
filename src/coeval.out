@@ -1,0 +1,28 @@
+nohup: ignoring input
+Created TAP+ (v1.2.1) - Connection:
+	Host: gea.esac.esa.int
+	Use HTTPS: True
+	Port: 443
+	SSL Port: 443
+Created TAP+ (v1.2.1) - Connection:
+	Host: geadata.esac.esa.int
+	Use HTTPS: True
+	Port: 443
+	SSL Port: 443
+['Hyades' 'ComaBer' 'Pleiades' 'Praesepe' 'alphaPer' 'IC2391' 'IC2602'
+ 'Blanco1' 'NGC2451']
+INFO: Query finished. [astroquery.utils.tap.core]
+INFO: Query finished. [astroquery.utils.tap.core]
+------ Pleiades -------
+Pleiades cone search    107919
+both                      1225
+Pleiades                   101
+Name: which, dtype: int64
+------ alphaPer -------
+alphaPer cone search    291664
+both                       699
+alphaPer                    41
+Name: which, dtype: int64
+{'rv': 4.90490490490491, 'lookback_time': 187837837.83783782, 'min_sep': 11.47014669119476}
+-----------Cluster: Pleiades,  9821.941699028015 seconds
+-----------Cluster: alphaPer,  26534.836267471313 seconds
