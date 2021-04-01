@@ -15,19 +15,25 @@ from astroquery.gaia import Gaia
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 
+from transforms import pm_to_dxyz
 
 class gaiastars():
 	
 	#default tables and columns (they differ from one release to the next):
 	#dr2
-	gaia_column_dict_gaiadr2 ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
-								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
-								'e_bp_min_rp_val', 'a_g_val'],
-			'external.gaiadr2_geometric_distance': ['r_est']}
+	gaia_column_dict_gaiadr2 ={'gaiadr2.gaia_source':{'idcol':'source_id',
+								'tblcols':    [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
+												'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
+												'e_bp_min_rp_val', 'a_g_val']},
+			'external.gaiadr2_geometric_distance': {'idcol': 'source_id',
+													'tblcols': ['r_est']}
+	}
 	#early release dr3
-	gaia_column_dict_gaiaedr3 ={'gaiaedr3.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
-								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag']}
-
+	gaia_column_dict_gaiaedr3 ={
+		'gaiaedr3.gaia_source':{'idcol': 'source_id',
+								'tblcols': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
+								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'ruwe']}
+	}
 
 	
 	def gaia_column_dict(self, schema):
@@ -41,6 +47,15 @@ class gaiastars():
 			raise ValueError(errorstr)
 
 		return coldict
+
+	def add_table_columns(self, collist, table="gaia_source", schema = "gaiaedr3"):
+		fullname = '.'.join([schema, table])
+		coldict = self.gaia_column_dict(schema)
+		oldcols = coldict.get(fullname)
+		if oldcols is None:
+			coldict[fullname]=collist
+		else:
+			oldcols['tblcols'] += collist
 
 	gaia_source_constraints = [
 		'{schema}.gaia_source.parallax_over_error > 10',
@@ -78,11 +93,14 @@ class gaiastars():
 		if self.description is not None:
 			str += f', Description: {self.description}'
 		if self.objs is not None:
-			str += f', {len(self.objs)} objects' #hope its a dataframe
+			str += f', {self.__len__()} objects' #hope its a dataframe
 		return str
 
 	def __str__(self):
 		return self.__repr__()
+
+	def __len__(self):
+		return 0 if self.objs is None else len(self.objs)
 
 	def _get_col_list(self, coldict):
 		"""
@@ -97,19 +115,15 @@ class gaiastars():
 		for t in coldict:
 
 			s = f' {t}.'
-			cols = coldict[t]
-
-			#if source_id isn't in the first table's column list, prepend it on
-			if first:
-				first=False
-				if not 'source_id' in cols:
-					cols = ['source_id']+cols
+			cols = [coldict[t]['idcol']] + coldict[t]['tblcols']
 
 			tstr = s + (', '+t+'.').join(cols)
 
 			strs.append(tstr)
 
-		return ','.join(strs)
+		collist = ','.join(strs)
+
+		return collist
 
 	def _get_db_source(self, coldict, join_type='LEFT JOIN'):
 		"""
@@ -123,9 +137,11 @@ class gaiastars():
 		"""
 		tbl_list = list(coldict.keys())
 		first = tbl_list[0]
+		firstid = coldict[first]['idcol']
 		dbsrc = first
 		for t in tbl_list[1:]:
-			dbsrc += f' {join_type} {t} ON {first}.source_id = {t}.source_id'
+			idcol = coldict[t]['idcol']
+			dbsrc += f' {join_type} {t} ON {first}.{firstid} = {t}.{idcol}'
 
 		return dbsrc
 
@@ -199,7 +215,8 @@ class gaiastars():
 		query_string = f'SELECT {col_list} FROM {db_source} WHERE {query_filter}'
 		self.gaia_query(query_string, query_type='async')	
 
-	def gaia_query(self, query_str, query_type, upload_resource=None, upload_tablename=None):
+	def gaia_query(self, query_str, query_type, upload_resource=None,
+					upload_tablename=None, indexcol='source_id'):
 		"""
 		Queries Gaia archive with query_str and updates self with results
 		Arguments:
@@ -229,7 +246,7 @@ class gaiastars():
 			raise ValueError(f'invalid query_type parameter: {query_type}; valid values are: \'async\' and \'sync\'')
 
 		#get the results as pandas dataframe and index it
-		self.objs = job.get_results().to_pandas().set_index('source_id')
+		self.objs = job.get_results().to_pandas().set_index(indexcol)
 		
 		# hacks for edr3
 		if not ('r_est' in self.objs.columns):
@@ -251,19 +268,24 @@ class gaiastars():
 		Returns:
 			Nothing; updates self in place with pandas DataFrame in property self.objs
 		"""
-		#use default column list if one wasn't passed in
-		coldict = self.gaia_column_dict(schema=schema) if column_dict is None else column_dict
 
 		#need tempfile for source id list
 		upload_tablename, upload_resource, sidcol = source_id_to_xmlfile(source_idlist)
+
+		#use default column list if one wasn't passed in
+		coldict = self.gaia_column_dict(schema=schema) if column_dict is None else column_dict
+		mycoldict = {'tap_upload.source_idlist':{'idcol':sidcol,'tblcols':[]}, **coldict}
+
 		try:
 			#build the query:
-			col_list = self._get_col_list( coldict)
-			db_source = self._get_db_source({'tap_upload.source_idlist':[], **coldict})
+			col_list = self._get_col_list( mycoldict)
+
+			db_source = self._get_db_source(mycoldict)
 			query_str = f'SELECT {col_list} FROM {db_source}'
 
 			#do the deed
-			self.gaia_query(query_str, query_type, upload_resource=upload_resource, upload_tablename=upload_tablename)
+			self.gaia_query(query_str, query_type, upload_resource=upload_resource,
+					upload_tablename=upload_tablename, indexcol=sidcol)
 
 		finally:
 			#ditch the temporary file
@@ -297,7 +319,7 @@ class gaiastars():
 		with open(picklepath,'wb') as pkl:
 			pickle.dump(self, pkl)
 		
-	def get_colors(self, absmag=True, r_est=True):
+	def get_colors(self, absmag=True, r_est=True, deredden=False):
 		"""
 		Returns absolute magnitude and color for each star
 		Arguments:
@@ -322,6 +344,10 @@ class gaiastars():
 
 		#color
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
+        
+		if deredden:
+			M_G = M_G - self.objs.a_g_val_est
+			BP_RP = BP_RP - self.objs.e_bp_min_rp_val_est
 
 		return BP_RP, M_G
 
@@ -332,13 +358,14 @@ class gaiastars():
 		s = kwargs.pop('s', 1) #default size = 1
 		absmag = kwargs.pop('absmag', True) #Absolute or Apparent magnitude?
 		r_est = kwargs.pop('r_est',True) #estimated distance or calc from parallax
+		deredden = kwargs.pop('deredden', False)
    
 		if ax is None:
 			yax = plt.subplot(111)
 		else:
 			yax = ax
 
-		BP_RP, M_G = self.get_colors(absmag=absmag, r_est=r_est)
+		BP_RP, M_G = self.get_colors(absmag=absmag, r_est=r_est, deredden=deredden)
 
 		pcm = yax.scatter(BP_RP, M_G, label=label, s=s, **kwargs)
 
@@ -570,21 +597,6 @@ class gaiastars():
 		Returns:
 			
 		"""
-		pass
-
-	def points_to(self, center, center_radius, center_dist_tol = 0.25, inplace=False, allcalcs=True):
-		"""
-		for each obj in self, computes whether the obj's motion points back to the center.
-		
-		Arguments:
-			self: gaiastars instance with populated objs
-			center:  astropy.SkyCoord instance
-			center_radius: (float) angular radius of cluster in degrees
-			center_dist_tol: (float) +/- allowable fraction of distance to cluster to allow
-		
-		Returns:
-			pandas series of booleans, index matching that of self.objs            
-		"""
 		objs = self.objs
 		rad_delta = np.radians(objs.dec)
 		sin_delta = np.sin(rad_delta)
@@ -625,25 +637,6 @@ class gaiastars():
 
 		#compute travel time in years
 		travel_time = cen_dist/mag_ppm_pc
-		
-		####### determine whether stars' motions point back to center #########
-		# calculate phi: angle btwn outer edge of cluster+search radius, star(the vertex) and cluster center
-		heights = objs.r_est*np.radians(center_radius)
-		phi = np.arctan(heights/cen_dist)
-
-		# calculate iota: angle of center in star's reference frame
-		pi2 = 2.0*np.pi
-		delta_radec = np.array([center.ra.to_value(u.degree), center.dec.to_value(u.degree)]).reshape(2,1)-np.array([objs.ra, objs.dec])
-		iota = np.remainder(np.arctan2(delta_radec[1], delta_radec[0])+pi2, pi2)
-
-		# calculate zeta: angle of pm from stars but reversed to point backwards possibly to center
-		zeta = np.remainder((np.arctan2(objs.pmdec, objs.pmra)-np.pi)+pi2,pi2)
-
-		#boundaries that the pm angle must fall between:
-		upper = np.remainder(iota+phi+pi2, pi2)
-		lower = np.remainder(iota-phi+pi2, pi2)
-
-		points_to = np.logical_and(zeta >= lower, zeta <= upper)
 
 		#build up the return value
 		ret_df = pd.DataFrame({'theta':theta,
@@ -658,102 +651,163 @@ class gaiastars():
 								'mag_ppm': mag_ppm,
 								'mag_ppm_r':mag_ppm_r,
 								'mag_ppm_pc': mag_ppm_pc,
-								'travel_time':travel_time,
-								'height':heights,
-								'phi':phi,
-								'delta_ra': delta_radec[0],
-								'delta_dec': delta_radec[1],
-								'iota':iota,
-								'zeta':zeta,
-								'upper':upper,
-								'lower': lower,
-								'points_to': points_to},
+								'travel_time':travel_time},
 				index=pd.Index(objs.index, name=objs.index.name))
-
-		cols = ret_df.columns if allcalcs else ['travel_time', 'points_to']
-		if inplace:
-			for c in cols:
-				self.objs[c] = ret_df[c]
+		if allcalcs:
+			ret_cols =  list(ret_df.columns)
 		else:
-			return ret_df[cols]
-	
-	def _trace_back_obj(self, o, c, t):
+			ret_cols = ['travel_time']
+
+		if inplace:
+			for c in ret_cols:
+				self.objs[c] = ret_df[c]
+			return None
+		else:
+			return ret_df[ret_cols]		
+
+	def points_to(self, center, center_radius, inplace=False, allcalcs=True):
 		"""
-		computes minimum time and distance of object trajectory with that of c
-		Arguments:
-		o: object, SkyCoord
-		c: object, SkyCoord, presumably cluster center
-		t: time vector in years over which to perform calculations
-		Returns:
-			dict with keys: d_min, t_min and tol
-		Referenct:
-		https://arxiv.org/pdf/2005.04762.pdf 
-		"""
+		for each obj in self, computes whether the obj's motion points back to the center.
 
-		#function to constrain dec between -90 and 90 (argument in radians)
-		fix_lat = np.vectorize(lambda x:  x if x <= np.pi/2.0 else \
-			( np.pi-x if x <=3.0*np.pi/2.0 else  x-2.0*np.pi))
-
-		# get the ra's and dec's of the two objects at time t
-		# relying on astropy.units to do proper conversion to degrees
-		o_ra =  (o.ra  + o.pm_ra_cosdec*t).wrap_at(360*u.degree)
-		c_ra  = (c.ra + c.pm_ra*t).wrap_at(360*u.degree)
-
-		o_dec = coord.Angle(fix_lat((o.dec + o.pm_dec*t).radian % (2.0*np.pi))*u.radian)
-		c_dec = coord.Angle(fix_lat((c.dec + c.pm_dec*t).radian % (2.0*np.pi))*u.radian)
-
-		#sky coords at time t for both, using constant distance:
-		o_t = SkyCoord(ra=o_ra, dec=o_dec, distance=o.distance)
-		c_t = SkyCoord(ra=c_ra, dec=c_dec, distance=c.distance)
-
-		#angular separation as function of time
-		sep = o_t.separation(c_t)
-
-		#find minimum separation and time
-		min_i = sep.argmin()
-		d_min = o_t[min_i].separation(c_t[min_i])
-		t_min = t[min_i]
-
-		#calculate the tolerance (see equation 1 in reference)
-		tol = 10+1.3*c.separation(o)/(1*u.degree)
-
-		return {"t_min":t_min, "d_min":d_min, "tol": tol,
-			 'tracesback':(d_min/(1.0*u.arcminute)) <= tol}
-
-
-
-	def traces_back(self, center, time_max=-2.0e9, time_step=0.1e9):
-		"""
-		for each obj in self, computes whether the obj's motion traces back to the center in space and time.
-		
 		Arguments:
 			self: gaiastars instance with populated objs
 			center:  astropy.SkyCoord instance
-			time_max: float, maximum time to trace back to, in years, negative number
-			time_step: float, time increments in years
-		
+			center_radius: (float) angular radius of cluster in degrees
+			center_dist_tol: (float) +/- allowable fraction of distance to cluster to allow
+
 		Returns:
-			pandas dataframe, same rows as self.objs, columns: d_min, t_min, tol, tracesback           
+			pandas series of booleans, index matching that of self.objs            
 		"""
-		#timeframe (round out to make closed interval [time_max,0] evenly space by time_step)
-		t = np.linspace(time_max, 0, int((abs(time_max)+time_step)/time_step))*u.year
+		objs = self.objs
+
+		def normalize_angle(ang):
+			return np.remainder(ang+2.0*np.pi, 2.0*np.pi)
+
+		#get some radians and co-latitudes for the stars and center
+		s_rad_delta = np.radians(objs.dec)
+		s_colat = np.pi/2.0 - s_rad_delta
+		s_sin_colat = np.sin(s_colat)
+		s_cos_colat = np.cos(s_colat)
+
+		c_rad_delta = center.dec.radian
+		c_colat = np.pi/2.0 - c_rad_delta
+		c_sin_colat =  np.sin(c_colat)
+		c_cos_colat = np.cos(c_colat)
+
+		#cosine of differenece in RA:
+		cos_delta_ra = np.cos(np.radians(objs.ra - center.ra.degree))
+
+		# Algorithm:
+		#1. Calculate theta, spherical angle star -> cluster wrt. star's meridian
+		#2. Calculate gamma: spherical angle btwn star-cluster line of site and search radius around cluster
+		#3. Calculate phi_prime: opposite of direction of star's PM wrt cluster standard of rest.
+		#4. Test wheter theta-gamma <= phi_prime <= theta+gamma
+
+		####### determine whether stars' motions point back to center #########
+		# 1. Calculate theta: spherical angle great circle containing star and cluster
+
+		#1a: Calc. great circle distance in radians star-> cluster
+		cen_dist = np.arccos(s_cos_colat*c_cos_colat + s_sin_colat*c_sin_colat*cos_delta_ra)
+		cen_dist = normalize_angle(cen_dist)
+		cos_cen_dist = np.cos(cen_dist)
+		sin_cen_dist = np.sin(cen_dist)
+
+		#1b: Given the cendist, calculate theta using law of cosines
+		cos_theta = (c_cos_colat - cos_cen_dist*s_cos_colat)/(sin_cen_dist*s_sin_colat)
+		theta = np.arccos(cos_theta)
+
+		#2: Calculate gamma, spherical angle between star-cluster los and search radius
+		#2a. Calculate c: length of arc from outer edge of cluster to center of star
+		cos_center_radius = np.cos(np.radians(center_radius))
+		cos_c = (cos_cen_dist*cos_center_radius)
+		c = np.arccos(cos_c)
+		sin_c = np.sin(c)
+
+		#2b. Calculate gamma
+		gamma = np.arccos((cos_center_radius-cos_cen_dist*cos_c)/(sin_cen_dist*sin_c))
+
+		#3: calculate phi_prime: opposite direction of star's motion, in cluster reference frame
+		delta_pm_ra = objs.pmra - center.pm_ra_cosdec.value
+		delta_pm_dec = objs.pmdec - center.pm_dec.value
+		pm_dir = np.arctan2(delta_pm_ra, delta_pm_dec)
+		#need opposite direction, so subtract off pi
+		pm_dir_prime = pm_dir - np.pi
+		pm_dir_prime = normalize_angle(pm_dir_prime)
+
+		#4: calculate points_to
+		points_to = np.logical_and(theta-gamma <= pm_dir_prime, pm_dir_prime <= theta+gamma)
+
+		#build up return value
+		ret_df = pd.DataFrame({'cen_dist':cen_dist,
+								'theta':theta,
+								'c': np.arccos(cos_c),
+								'gamma': gamma,
+								'delta_pm_ra':delta_pm_ra,
+								'delta_pm_dec':delta_pm_dec,
+								'pm_dir': pm_dir,
+								'pm_dir_prime': pm_dir_prime,
+								'points_to': points_to})
+
+		cols = ret_df.columns if allcalcs else [ 'points_to']
+		if inplace:
+			for c in cols:
+				self.objs[c] = ret_df[c]
+			return None
+		else:
+			return ret_df[cols]
+
+	def _travel_time3d(self, star, center, tt_rng, rv, ret_sample=False):
+		#get velocity column vectors for star for each element of rv
+		d_xyz_s = pm_to_dxyz(star.ra.value, star.dec.value, star.distance.value,
+				star.pm_ra_cosdec.value, star.pm_dec.value, rv.value)*u.km/u.second
 		
-		#object coordinates
-		obj_coords = self.get_coords()
+		#center velocity column vector
+		d_xyz_c = center.velocity.d_xyz.reshape(3,1)
+		#velocity in center reference frame
+		d_xyz_s_csr = d_xyz_s - d_xyz_c
+		
+		#space velocity and convert to pc/year
+		vel_csr = np.sqrt((d_xyz_s_csr**2).sum(axis=0)).to(u.pc/u.year)
+		
+		#distance btwn center and star
+		d=center.separation_3d(star) #comes back in pc
+		
+		#how long did it take given the sample of velocities
+		tt_sample = d/vel_csr # should be in years
+		
+		valid_tt = np.logical_and(tt_sample >= tt_rng[0], tt_sample <= tt_rng[1])
+		tt_cand = np.any(valid_tt)
+		if tt_cand:
+			tt_min = tt_sample[valid_tt].min().value
+			tt_max = tt_sample[valid_tt].max().value
+			rv_min = rv[valid_tt].min().value
+			rv_max = rv[valid_tt].max().value
+		else:
+			tt_min = tt_max = rv_min = rv_max = np.nan
 
-		# in future, transform to local standard of rest:
-		#transform to default lsr frame
-		#obj_coords_lsr = obj_coords.transform_to(coords.lsr)
-		#center_lsr = center.transform_to(coords.lsr)
-		obj_coords_lsr = obj_coords
-		center_lsr = center
+		if ret_sample:
+			return rv, tt_sample	
+		else:		
+			return {"tt_3d_candidate": tt_cand,
+					"tt_3d_min":tt_min,
+					"rv_min": rv_min,
+					"tt_3d_max":tt_max,
+					"rv_max": rv_max}
+	
+	def travel_time3d(self, center, tt_rng, rv=None, inplace=False):
+		if rv is None:
+			my_rv = np.concatenate([np.linspace(-100, -20, 800, endpoint=False),
+						np.linspace(-20,20,1000, endpoint=False),
+						np.linspace(20, 100, 800)])*u.km/u.second
+		else:
+			my_rv = rv
 
-		#calculate traceback for each star:
-		tb_df = pd.DataFrame([self._trace_back_obj(o_lsr, center_lsr, t) for o_lsr in obj_coords_lsr],
-			index=pd.Index(self.objs.index, name=self.objs.index.name))
-
-		return tb_df
-
+		coords = self.get_coords()
+		
+		tt_df = pd.DataFrame([self._travel_time3d(s, center,tt_rng,my_rv) for s in coords],
+					index = pd.Index(self.objs.index, name = self.objs.index.name))
+		
+		return tt_df
 
 def from_pickle(picklefile):
 	"""
@@ -767,7 +821,7 @@ def from_pickle(picklefile):
 		
 	return my_fs
 
-def source_id_to_xmlfile(source_idlist, sidcol='source_id', table_id='source_idlist'):
+def source_id_to_xmlfile(source_idlist, sidcol='typed_id', table_id='source_idlist'):
 	#need tempfile for source id list
 	fh =  tempfile.mkstemp()
 	os.close(fh[0]) #fh[0] is the file descriptor; fh[1] is the path
@@ -801,13 +855,18 @@ def gaiadr2xdr3(source_idlist,nearest=True):
 	if nearest:
 		#just return the nearest dr3 source id based on angular distance
 		ret_df = df.sort_values(['dr2_source_id','angular_distance']).groupby('dr2_source_id',
-					as_index=False).first().set_index('source_id')
+					as_index=False).first().set_index(sidcol)
 	else:
-		ret_df = df.set_index('source_id')
+		ret_df = df.set_index(sidcol)
 
 	return ret_df
 
 if __name__ == '__main__':
+
+	import sys
+	sys.path.append('./src')
+
+	from data_queries import  getClusterInfo, getGAIAKnownMembers
 
 	fs = gaiastars(name='test cone search', description='test of the new capabilities of GaiaStars')
 	print(fs)
@@ -816,20 +875,35 @@ if __name__ == '__main__':
 
 	print(f'There are {len(fs.objs)} field stars')
 
+	cluster_info = getClusterInfo()
+
+	fs.points_to(cluster_info.loc['Pleiades']['coords'], 6.0, inplace=True)
+	n = fs.objs.points_to.sum()
+	print(f'Number of points_to: {n}')
+
+	print("\n not testing travel time 3d")
+
+	#travel_time = fs.travel_time3d(cluster_info.loc['Pleiades']['coords'],(50e6*u.year, 100e6*u.year))
+	#print(travel_time.head())
+
+
 	id_list = list(fs.objs.index)
 	fs2 = gaiastars(name='test id search')
 	fs2.from_source_idlist(id_list, schema='gaiadr2')
 	print(fs2)
 
+	print('testing dr2 to dr3 mapping')
 	df = gaiadr2xdr3(id_list)
 	print(df.head())
 
+	print('testing missing id handling')
 	fs3 = gaiastars(name='test missing id handling')
 	idlist2 = id_list[0:5]+[0,1234] #invalid source ids
 	fs3.from_source_idlist(idlist2, query_type='sync')
 	print(fs3)
 	print(fs3.objs)
 
+	print('testing box search')
 	fs4 = gaiastars(name='test box search', description='test of the new box search of GaiaStars')
 	print(fs)
 	fs4.boxsearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 5.0*u.degree, 5.0*u.degree, parallax=(5.0,10.0))
