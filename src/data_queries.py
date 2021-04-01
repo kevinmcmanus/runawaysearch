@@ -11,7 +11,7 @@ from astropy.coordinates.sky_coordinate import SkyCoord
 from astropy.units import Quantity
 from astroquery.gaia import Gaia
 import astropy.coordinates as coord
-from astropy.table import QTable, Table, vstack
+from astropy.table import QTable, Table, vstack, join
 
 import pandas as pd
 import numpy as np
@@ -132,6 +132,31 @@ def getClusterInfo():
                              radial_velocity=table3['RV']*u.km/u.second)
 
     table3['coords'] = cluster_coords
+
+    #augment with data from Table2.  See Table2Readme.txt in data directory
+
+    #hunt for the data directory
+    datadir = None
+    for d in ['./data', '../data'] :
+        if os.path.isdir(d):
+            datadir = d
+            break
+
+        
+    table2 = pd.read_csv(os.path.join(datadir,'Table2.csv'))
+    table2.rename(columns={'Cluster':'cluster'}, inplace=True)
+
+    #need this as astropy table
+    table2_t = Table.from_pandas(table2)
+    table2_t.add_index('cluster')
+
+    table3 = join(table3, table2_t)
+    table3.add_index('cluster')
+
+    #put on the Z values (see Gaia Paper Section 6)
+    table3['Z'] = 0.017 #default value
+    for cl in ['Praesepe','Hyades','alphaPer']:
+        table3.loc[cl]['Z'] = 0.020
 
     return table3
 

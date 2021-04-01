@@ -15,19 +15,25 @@ from astroquery.gaia import Gaia
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 
+from transforms import pm_to_dxyz
 
 class gaiastars():
 	
 	#default tables and columns (they differ from one release to the next):
 	#dr2
-	gaia_column_dict_gaiadr2 ={'gaiadr2.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
-								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
-								'e_bp_min_rp_val', 'a_g_val'],
-			'external.gaiadr2_geometric_distance': ['r_est']}
+	gaia_column_dict_gaiadr2 ={'gaiadr2.gaia_source':{'idcol':'source_id',
+								'tblcols':    [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
+												'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag',
+												'e_bp_min_rp_val', 'a_g_val']},
+			'external.gaiadr2_geometric_distance': {'idcol': 'source_id',
+													'tblcols': ['r_est']}
+	}
 	#early release dr3
-	gaia_column_dict_gaiaedr3 ={'gaiaedr3.gaia_source': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
+	gaia_column_dict_gaiaedr3 ={
+		'gaiaedr3.gaia_source':{'idcol': 'source_id',
+								'tblcols': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
 								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'ruwe']}
-
+	}
 
 	
 	def gaia_column_dict(self, schema):
@@ -41,6 +47,15 @@ class gaiastars():
 			raise ValueError(errorstr)
 
 		return coldict
+
+	def add_table_columns(self, collist, table="gaia_source", schema = "gaiaedr3"):
+		fullname = '.'.join([schema, table])
+		coldict = self.gaia_column_dict(schema)
+		oldcols = coldict.get(fullname)
+		if oldcols is None:
+			coldict[fullname]=collist
+		else:
+			oldcols['tblcols'] += collist
 
 	gaia_source_constraints = [
 		'{schema}.gaia_source.parallax_over_error > 10',
@@ -78,11 +93,14 @@ class gaiastars():
 		if self.description is not None:
 			str += f', Description: {self.description}'
 		if self.objs is not None:
-			str += f', {len(self.objs)} objects' #hope its a dataframe
+			str += f', {self.__len__()} objects' #hope its a dataframe
 		return str
 
 	def __str__(self):
 		return self.__repr__()
+
+	def __len__(self):
+		return 0 if self.objs is None else len(self.objs)
 
 	def _get_col_list(self, coldict):
 		"""
@@ -97,19 +115,15 @@ class gaiastars():
 		for t in coldict:
 
 			s = f' {t}.'
-			cols = coldict[t]
-
-			#if source_id isn't in the first table's column list, prepend it on
-			if first:
-				first=False
-				if not 'source_id' in cols:
-					cols = ['source_id']+cols
+			cols = [coldict[t]['idcol']] + coldict[t]['tblcols']
 
 			tstr = s + (', '+t+'.').join(cols)
 
 			strs.append(tstr)
 
-		return ','.join(strs)
+		collist = ','.join(strs)
+
+		return collist
 
 	def _get_db_source(self, coldict, join_type='LEFT JOIN'):
 		"""
@@ -123,9 +137,11 @@ class gaiastars():
 		"""
 		tbl_list = list(coldict.keys())
 		first = tbl_list[0]
+		firstid = coldict[first]['idcol']
 		dbsrc = first
 		for t in tbl_list[1:]:
-			dbsrc += f' {join_type} {t} ON {first}.source_id = {t}.source_id'
+			idcol = coldict[t]['idcol']
+			dbsrc += f' {join_type} {t} ON {first}.{firstid} = {t}.{idcol}'
 
 		return dbsrc
 
@@ -199,7 +215,8 @@ class gaiastars():
 		query_string = f'SELECT {col_list} FROM {db_source} WHERE {query_filter}'
 		self.gaia_query(query_string, query_type='async')	
 
-	def gaia_query(self, query_str, query_type, upload_resource=None, upload_tablename=None):
+	def gaia_query(self, query_str, query_type, upload_resource=None,
+					upload_tablename=None, indexcol='source_id'):
 		"""
 		Queries Gaia archive with query_str and updates self with results
 		Arguments:
@@ -229,7 +246,7 @@ class gaiastars():
 			raise ValueError(f'invalid query_type parameter: {query_type}; valid values are: \'async\' and \'sync\'')
 
 		#get the results as pandas dataframe and index it
-		self.objs = job.get_results().to_pandas().set_index('source_id')
+		self.objs = job.get_results().to_pandas().set_index(indexcol)
 		
 		# hacks for edr3
 		if not ('r_est' in self.objs.columns):
@@ -251,19 +268,24 @@ class gaiastars():
 		Returns:
 			Nothing; updates self in place with pandas DataFrame in property self.objs
 		"""
-		#use default column list if one wasn't passed in
-		coldict = self.gaia_column_dict(schema=schema) if column_dict is None else column_dict
 
 		#need tempfile for source id list
 		upload_tablename, upload_resource, sidcol = source_id_to_xmlfile(source_idlist)
+
+		#use default column list if one wasn't passed in
+		coldict = self.gaia_column_dict(schema=schema) if column_dict is None else column_dict
+		mycoldict = {'tap_upload.source_idlist':{'idcol':sidcol,'tblcols':[]}, **coldict}
+
 		try:
 			#build the query:
-			col_list = self._get_col_list( coldict)
-			db_source = self._get_db_source({'tap_upload.source_idlist':[], **coldict})
+			col_list = self._get_col_list( mycoldict)
+
+			db_source = self._get_db_source(mycoldict)
 			query_str = f'SELECT {col_list} FROM {db_source}'
 
 			#do the deed
-			self.gaia_query(query_str, query_type, upload_resource=upload_resource, upload_tablename=upload_tablename)
+			self.gaia_query(query_str, query_type, upload_resource=upload_resource,
+					upload_tablename=upload_tablename, indexcol=sidcol)
 
 		finally:
 			#ditch the temporary file
@@ -297,7 +319,7 @@ class gaiastars():
 		with open(picklepath,'wb') as pkl:
 			pickle.dump(self, pkl)
 		
-	def get_colors(self, absmag=True, r_est=True):
+	def get_colors(self, absmag=True, r_est=True, deredden=False):
 		"""
 		Returns absolute magnitude and color for each star
 		Arguments:
@@ -322,6 +344,10 @@ class gaiastars():
 
 		#color
 		BP_RP = self.objs.phot_bp_mean_mag - self.objs.phot_rp_mean_mag
+        
+		if deredden:
+			M_G = M_G - self.objs.a_g_val_est
+			BP_RP = BP_RP - self.objs.e_bp_min_rp_val_est
 
 		return BP_RP, M_G
 
@@ -332,13 +358,14 @@ class gaiastars():
 		s = kwargs.pop('s', 1) #default size = 1
 		absmag = kwargs.pop('absmag', True) #Absolute or Apparent magnitude?
 		r_est = kwargs.pop('r_est',True) #estimated distance or calc from parallax
+		deredden = kwargs.pop('deredden', False)
    
 		if ax is None:
 			yax = plt.subplot(111)
 		else:
 			yax = ax
 
-		BP_RP, M_G = self.get_colors(absmag=absmag, r_est=r_est)
+		BP_RP, M_G = self.get_colors(absmag=absmag, r_est=r_est, deredden=deredden)
 
 		pcm = yax.scatter(BP_RP, M_G, label=label, s=s, **kwargs)
 
@@ -729,6 +756,58 @@ class gaiastars():
 		else:
 			return ret_df[cols]
 
+	def _travel_time3d(self, star, center, tt_rng, rv, ret_sample=False):
+		#get velocity column vectors for star for each element of rv
+		d_xyz_s = pm_to_dxyz(star.ra.value, star.dec.value, star.distance.value,
+				star.pm_ra_cosdec.value, star.pm_dec.value, rv.value)*u.km/u.second
+		
+		#center velocity column vector
+		d_xyz_c = center.velocity.d_xyz.reshape(3,1)
+		#velocity in center reference frame
+		d_xyz_s_csr = d_xyz_s - d_xyz_c
+		
+		#space velocity and convert to pc/year
+		vel_csr = np.sqrt((d_xyz_s_csr**2).sum(axis=0)).to(u.pc/u.year)
+		
+		#distance btwn center and star
+		d=center.separation_3d(star) #comes back in pc
+		
+		#how long did it take given the sample of velocities
+		tt_sample = d/vel_csr # should be in years
+		
+		valid_tt = np.logical_and(tt_sample >= tt_rng[0], tt_sample <= tt_rng[1])
+		tt_cand = np.any(valid_tt)
+		if tt_cand:
+			tt_min = tt_sample[valid_tt].min().value
+			tt_max = tt_sample[valid_tt].max().value
+			rv_min = rv[valid_tt].min().value
+			rv_max = rv[valid_tt].max().value
+		else:
+			tt_min = tt_max = rv_min = rv_max = np.nan
+
+		if ret_sample:
+			return rv, tt_sample	
+		else:		
+			return {"tt_3d_candidate": tt_cand,
+					"tt_3d_min":tt_min,
+					"rv_min": rv_min,
+					"tt_3d_max":tt_max,
+					"rv_max": rv_max}
+	
+	def travel_time3d(self, center, tt_rng, rv=None, inplace=False):
+		if rv is None:
+			my_rv = np.concatenate([np.linspace(-100, -20, 800, endpoint=False),
+						np.linspace(-20,20,1000, endpoint=False),
+						np.linspace(20, 100, 800)])*u.km/u.second
+		else:
+			my_rv = rv
+
+		coords = self.get_coords()
+		
+		tt_df = pd.DataFrame([self._travel_time3d(s, center,tt_rng,my_rv) for s in coords],
+					index = pd.Index(self.objs.index, name = self.objs.index.name))
+		
+		return tt_df
 
 def from_pickle(picklefile):
 	"""
@@ -742,7 +821,7 @@ def from_pickle(picklefile):
 		
 	return my_fs
 
-def source_id_to_xmlfile(source_idlist, sidcol='source_id', table_id='source_idlist'):
+def source_id_to_xmlfile(source_idlist, sidcol='typed_id', table_id='source_idlist'):
 	#need tempfile for source id list
 	fh =  tempfile.mkstemp()
 	os.close(fh[0]) #fh[0] is the file descriptor; fh[1] is the path
@@ -776,9 +855,9 @@ def gaiadr2xdr3(source_idlist,nearest=True):
 	if nearest:
 		#just return the nearest dr3 source id based on angular distance
 		ret_df = df.sort_values(['dr2_source_id','angular_distance']).groupby('dr2_source_id',
-					as_index=False).first().set_index('source_id')
+					as_index=False).first().set_index(sidcol)
 	else:
-		ret_df = df.set_index('source_id')
+		ret_df = df.set_index(sidcol)
 
 	return ret_df
 
@@ -802,25 +881,32 @@ if __name__ == '__main__':
 	n = fs.objs.points_to.sum()
 	print(f'Number of points_to: {n}')
 
-""" 
+	print("\n not testing travel time 3d")
+
+	#travel_time = fs.travel_time3d(cluster_info.loc['Pleiades']['coords'],(50e6*u.year, 100e6*u.year))
+	#print(travel_time.head())
+
+
 	id_list = list(fs.objs.index)
 	fs2 = gaiastars(name='test id search')
 	fs2.from_source_idlist(id_list, schema='gaiadr2')
 	print(fs2)
 
+	print('testing dr2 to dr3 mapping')
 	df = gaiadr2xdr3(id_list)
 	print(df.head())
 
+	print('testing missing id handling')
 	fs3 = gaiastars(name='test missing id handling')
 	idlist2 = id_list[0:5]+[0,1234] #invalid source ids
 	fs3.from_source_idlist(idlist2, query_type='sync')
 	print(fs3)
 	print(fs3.objs)
 
+	print('testing box search')
 	fs4 = gaiastars(name='test box search', description='test of the new box search of GaiaStars')
 	print(fs)
 	fs4.boxsearch(52.074625695066345*u.degree, 48.932707471347136*u.degree, 5.0*u.degree, 5.0*u.degree, parallax=(5.0,10.0))
 	print(fs4)
 
 	print(fs4.tap_query_string)
- """
