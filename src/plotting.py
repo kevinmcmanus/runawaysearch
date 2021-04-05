@@ -196,5 +196,101 @@ def plot_points_to(ptr, cluster, ax):
     ax.grid()
     
 # =======
+from matplotlib.font_manager import FontProperties
+from matplotlib.patches import Rectangle
 
+def plot_confusion_matrix(y_true, y_hat, title=None, ax=None):
+    tn = np.logical_and(~y_true, ~y_hat).sum()
+    fp = np.logical_and(~y_true, y_hat).sum()
+    fn = np.logical_and(y_true, ~y_hat).sum()
+    tp = np.logical_and(y_true, y_hat).sum()
+    tot_pos = y_true.sum()
+    N = len(y_hat)
+    n_correct = (y_hat == y_true).sum()
+    tpr = tp/tot_pos
+    tnr = tn/(N-tot_pos)
+    bal_acc = (tpr+tnr)/2
+    spec = tn/(tn+fp)
+
+    precision = tp/(tp+fp)
+    recall = tp/(tp+fn)
+
+    va = 'top'
+    ha = 'center'
+    multialignment='center'
+
+    cspec = (0.0, 1.0, 0.0, 0.3)
+
+    rprops = {'ec':'black', 'fc':'lightgrey', 'alpha':0.7}
+    hprops = {'ec':'black', 'fc': cspec}
+    tprops = {'ec':'black', 'fc':'lightblue', 'alpha':0.5}
+
+    rects =[
+             Rectangle((0.2, 0.9), 0.8, 0.1, **rprops)
+            ,Rectangle((0.2, 0.8), 0.4, 0.1, **hprops)
+            ,Rectangle((0.6, 0.8), 0.4, 0.1, **hprops)
+            ,Rectangle((0.0, 0.0), 0.1, 0.8, **rprops)
+            ,Rectangle((0.1, 0.0), 0.1, 0.4, **hprops)
+            ,Rectangle((0.1, 0.4), 0.1, 0.4, **hprops)
+            ,Rectangle((0.2, 0.0), 0.4, 0.4, **tprops)
+            ,Rectangle((0.6, 0.0), 0.4, 0.4, **tprops)
+            ,Rectangle((0.2, 0.4), 0.4, 0.4, **tprops)
+            ,Rectangle((0.6, 0.4), 0.4, 0.4, **tprops)
+    ]
+    for r in rects:
+        ax.add_patch(r)
+
+    font_props=FontProperties(size=14, weight='bold')
+    #lables:
+    textboxes = [
+        ax.text(0.6, 0.95, 'Predicted')
+        ,ax.text(0.4, 0.85, 'Nonmember')
+        ,ax.text(0.8, 0.85, 'Member')
+
+
+
+        ,ax.text(0.4, 0.6, f'True Negative:\n{tn:,}')
+        ,ax.text(0.8, 0.6, f'False Positive:\n{fp:,}')
+        ,ax.text(0.4, 0.2, f'False Negative:\n{fn:,}')
+        ,ax.text(0.8, 0.2, f'True Positive:\n{tp:,}')
+    ]
+
+    for t in textboxes:
+        t.set_fontproperties(font_props)
+        t.set_ha(ha)
+        t.set_va(va)
+        t.set_multialignment(multialignment)
+
+    ax.text(0.05,0.4, 'True Status', fontproperties = font_props, rotation=90, va='center')
+    ax.text(.15,0.2, 'Member', fontproperties = font_props, rotation = 90, va='center')
+    ax.text(.15,0.6, 'Nonmember', fontproperties = font_props, rotation=90, va='center')
+
+    #ax.axvline(0.5, color='black')
+    #ax.axhline(0.5, color='black')
+    ax.xaxis.set_major_formatter(plt.NullFormatter())
+    ax.yaxis.set_major_formatter(plt.NullFormatter())
+    ax.set_yticks([])
+    ax.set_xticks([])
+    ax.set_title('Confusion Matrix' if title is None else title, size=16, pad=10,weight='bold')
+
+    #plot the summary table to the right
+    cspec = (0.0, 1.0, 0.0, 0.3)
+    tbl2 = ax.table(
+        colLabels = ['Measure', 'Value'],
+        colColours = [cspec, cspec], alpha=0.3,
+        cellText = [
+            ['N', f'{N:,} Stars'],
+            ['Members',f'{y_true.sum():,} Stars'],
+            ['Prevalance',f'{100*y_true.sum()/N:.2f} %'],
+            ['Accuracy', f'{100*n_correct/N:.2f}%'],
+            ['Precision\nPos Pred Value', f'{100*precision:.2f}%'],
+            ['Recall\nTrue Positive Rate', f'{100*recall:.2f}%'],
+            ['Specificity\nTrue Negative Rate', f'{100*spec:.2f}%'],
+            ['Balanced Accuracy', f'{100*bal_acc:.2f}%']
+
+        ],
+        colWidths=[0.4, 0.3],
+        bbox=[1.05, 0.20, 0.4, 0.6])
+    tbl2.auto_set_font_size(False)
+    tbl2.set_fontsize(12)
 # >>>>>>> master

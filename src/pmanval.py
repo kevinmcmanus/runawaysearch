@@ -1,76 +1,53 @@
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-#matplotlib inline
-
-from matplotlib.ticker import FormatStrFormatter
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-
-import sys
-sys.path.append('./src')
-
-from data_queries import  getClusterInfo, getGAIAKnownMembers
-from coeval import coeval
-from gaiastars import gaiastars as gs,gaiadr2xdr3
 
 import astropy.units as u
-from astropy.coordinates import SkyCoord
+from scipy.stats import chi2
 
-known_cluster_members, cluster_names = getGAIAKnownMembers()
-print(cluster_names)
+if __name__ == '__main__':
 
-# gaiadr2 to gaiaedr3 mapper
-from  gaiastars import gaiadr2xdr3
+    import os
+    print(f'Current Working Directory: {os.getcwd()}')
 
-errorcolumns = [
-    'ra_error', 'dec_error', 'parallax_error', 'pmra_error', 'pmdec_error','dr2_radial_velocity_error',
-    'ra_dec_corr', 'ra_parallax_corr','ra_pmra_corr', 'ra_pmdec_corr',
-    'dec_parallax_corr', 'dec_pmra_corr', 'dec_pmdec_corr',
-    'parallax_pmra_corr', 'parallax_pmdec_corr',
-    'pmra_pmdec_corr'
-]
-#add table to query to get the ruwe parameter
-fixme = gs(name='fixme')
-fixme.add_table_columns(errorcolumns)
+    from perryman import perryman
 
-# just deal with Hyades and alphaPer for now
-cluster_names = [ 'Hyades']
-xmatches = {}
-cluster_members={}
-#for cl in cluster_names:
-for cl in cluster_names:
-    known_members_dr2 = list(known_cluster_members.query('Cluster == @cl').index)
-    xmatches[cl] = gaiadr2xdr3(known_members_dr2)
-    cluster_members[cl]  = gs(name = cl, description=f'{cl} sources from Table 1a records from Gaia archive')
-    cluster_members[cl].from_source_idlist(list(xmatches[cl].dr3_source_id),schema='gaiaedr3', query_type='sync')
+    center_motion = {
+    'd_xyz': np.array([[-13.76187842],
+            [ 23.57255348],
+            [ -2.02249172]]),
+    'd_xyz_covar': np.array([[ 43.76306096, 105.99518972,  34.80672399],
+            [105.99518972, 314.7331364 , 106.98718194],
+            [ 34.80672399, 106.98718194,  41.6002135 ]]),
+    'tangental_velocity': np.array([[21.60904282],
+            [-7.12420731],
+            [15.33640148]])}
 
-print(cluster_members['Hyades'])
+    cluster_names = ['Pleiades', 'alphaPer','Hyades']
+    search_results = {}
 
-cluster_info = getClusterInfo()
-cluster_names = ['Hyades']
-search_results = {}
+    from gaiastars import from_pickle
 
-from gaiastars import from_pickle
+    for cl in cluster_names:
+        search_results[cl] = from_pickle(f'./data/search_results_{cl}.pkl')
+        print(search_results[cl])
 
-for cl in cluster_names:
-    search_results[cl] = from_pickle(f'./data/search_results_{cl}.pkl')
+    init_members = [       
+        45142206521351552, 3313285110990793472, 145664777917536512, 3294248609046258048, 3283285795218796800,
+        3388509470313327104, 47345009348203392, 3306922958753764992, 145391484855481344, 3412331901556818048,
+        3410856112139584000, 3288997483247358592, 47715063730746880, 45293526808851200, 3406734906335151872,
+        3411758128287351808, 3412605297699792512, 3282226793722500224, 3282171749421655168, 147258180719392512,
+        3410944730200538496, 3307782570688378496, 3309918646903563264, 3313978112552491136, 3303984513928122752,
+        3410076150374417408, 3308470968047333120, 3408504261063819520, 3413860050922284672, 3411128795318922496,
+        3338847893045082880, 3313759000500605056, 3310178784482082816, 3314063908819076352, 164216120356193664,
+        148946068508277888, 3310348551653256448, 145293181643038208, 51995909173956352, 3314597408180024960,
+        3408234502757515648, 38670343642226816, 3307528033746225664, 3313630082762446208, 3314109916508904064,
+        3314213025787054592, 144663157183364864, 3405127244241184256, 3407121831350730112, 3314212068010812032
+        ]
 
-print(search_results[cl])
+    #shorter list
+    #init_members = [3410944730200538496, 3307782570688378496, 3309918646903563264, 3313978112552491136, 3303984513928122752]
 
-from perryman import perryman
-
-c = cluster_info.loc['Hyades']['coords']
-
-#pick 5 random known members to initialize
-km = set(cluster_members['Hyades'].objs.index)
-sr = set(search_results['Hyades'].objs.index)
-common = [id for id in km.intersection(sr)]
-n = len(common)
-print(f'Number of common elements: {n}')
-els = np.random.choice(n,5, replace=False)
-elements = [common[el] for el in els]
-print(f'Initial members: {elements}')
-
-hyades = perryman(search_results['Hyades'].objs,
-                  init_members=elements)
-hyades.fit()
+    hyades=sr = perryman(search_results['Hyades'].objs, init_members)
+    hyades.fit()

@@ -8,6 +8,104 @@ def rms(x):
 
 from scipy.stats import chi2
 
+class star():
+    def __init__(self, gstar, source_id):
+        self.A = 4.740470463496208 # converts PM, omegabar to km/s
+        self.source_id = source_id
+        self.rarad = np.radians(gstar.ra)
+        self.decrad=np.radians(gstar.dec)
+        self.distance = 1000.0/gstar.parallax
+        self.rv = gstar.radial_velocity
+        self.rv_error = gstar.radial_velocity_error
+        star.gstar = gstar
+        self.dof = 3 if np.isfinite(gstar.radial_velocity) else 2
+        self.R = self.get_R(gstar, self.dof==3)
+
+        self.xyz, self.d_xyz, self.d_xyz_covar, self.pm_error, self.pm_covar, self.tang_v, self.tang_v_covar=self.eq_to_cartesian(gstar, self.dof==3)
+
+    def get_R(self, gstar, three_d):
+        rarad = self.rarad; decrad=self.decrad
+
+        R = np.array([[-np.sin(rarad), -np.sin(decrad)*np.cos(rarad), np.cos(decrad)*np.cos(rarad)],
+                    [ np.cos(rarad), -np.sin(decrad)*np.sin(rarad), np.cos(decrad)*np.sin(rarad)],
+                    [ 0,              np.cos(decrad),               np.sin(decrad)]
+                    ])
+        #the transpose of R should equal its inverse
+        assert np.allclose(R.T,np.linalg.inv(R))
+        if not three_d:
+            #chop off last column
+            R = R[:,:2].copy()
+
+        return R
+
+    def get_pm_jacobian(self, gstar, three_d):
+
+        A = self.A
+
+        pm_jacobian = np.array([[-gstar.pmra*A/gstar.parallax**2,  A/gstar.parallax, 0,                0],
+                                [-gstar.pmdec*A/gstar.parallax**2, 0,                A/gstar.parallax, 0],
+                                [0,                              0,                0,               1]
+                            ])
+        if not three_d:
+            pm_jacobian = pm_jacobian[:2,:3].copy()
+
+        return pm_jacobian
+
+    def eq_to_cartesian(self, gstar, three_d):
+        """
+        returns cartesian coords, velocity and velocity covariance for the given star
+        """
+        A = 4.740470463496208
+        rv = gstar.radial_velocity if three_d else 0
+        rv_error = gstar.radial_velocity_error if three_d else 0
+
+        R = self.R
+        xyz = self.distance*np.array([np.cos(self.decrad)*np.cos(self.rarad), np.cos(self.decrad)*np.sin(self.rarad),np.sin(self.decrad)]).reshape(-1,1)
+        tang_v = np.array([[A*gstar.pmra/gstar.parallax], [A*gstar.pmdec/gstar.parallax], [rv]])
+        if not three_d:
+            tang_v = tang_v[:2]
+        d_xyz = R.dot(tang_v)
+
+        #get the covariance matrix of d_xyz
+        # {parallax, pmra, pmdec, rv}; rv not correlated with anything
+        pm_corr = np.array([ [1,                       gstar.parallax_pmra_corr,   gstar.parallax_pmdec_corr,   0],
+                            [gstar.parallax_pmra_corr, 1,                          gstar.pmra_pmdec_corr,      0],
+                            [gstar.parallax_pmdec_corr, gstar.pmra_pmdec_corr,     1,                          0],
+                            [0,                        0,                        0,                          1]
+                            ])
+        if three_d:
+            pm_error = np.diag(np.array([gstar.parallax_error, gstar.pmra_error, gstar.pmdec_error, rv_error]))
+        else:
+            pm_error = np.diag(np.array([gstar.parallax_error, gstar.pmra_error, gstar.pmdec_error]))
+            pm_corr = pm_corr[:3,:3]
+
+        pm_covar = pm_error.dot(pm_corr.dot(pm_error))
+
+        pm_jacobian = self.get_pm_jacobian(gstar, three_d)
+        tang_v_covar = pm_jacobian.dot(pm_covar.dot(pm_jacobian.T))
+        d_xyz_covar = R.dot(tang_v_covar.dot(R.T))
+
+        return xyz, d_xyz, d_xyz_covar, pm_error, pm_covar, tang_v, tang_v_covar
+
+    def compare_center_motion(self, center_motion, conf):
+        chi_val = chi2.ppf(conf, self.dof)
+
+        # get center's expected motion at star's position and calculate difference
+        exp_motion = self.R.T.dot(center_motion['d_xyz'])
+        delta_tang_v = self.tang_v - exp_motion
+        # get the covariance of the exp motion at the position:
+        cen_covar = self.R.T.dot(center_motion['d_xyz_covar'].dot(self.R))
+        Sigma_inv = np.linalg.inv(self.tang_v_covar+cen_covar)
+
+        #chi square stat:
+        c = delta_tang_v.T.dot(Sigma_inv.dot(delta_tang_v))[0,0]
+
+        #H_0: velocities are same; H_1: velocities are different
+        self.velocity_consistent = c < chi_val
+
+        return self.velocity_consistent
+
+
 class perryman():
     def __init__(self, star_df, init_members):
         self.objs = star_df.copy()
@@ -58,127 +156,12 @@ class perryman():
         
         print(f'Model initialized with {self.init_members.sum()} members; Missing members: {len(self.missing_members)}')
         
+        self.stars = [star(s,id) for id,s in star_df.iterrows()]
+        self.objs_xyz = np.array([s.xyz for s in self.stars])
+        self.objs_d_xyz = np.array([s.d_xyz for s in self.stars])
         
-        print('calculating velocities and errors')
-        self._tangental_velocity = self.tangental_velocity()
-        print(f'Tangental Velocity Shape: {self._tangental_velocity.shape}')
-        
-        self._Covariance = self.Covariance()
-        print(f'Covariance.shape: {self._Covariance.shape}')
-        
-        self._tangental_velocity_error_covar = self.tangental_velocity_error_covar()
-        print(f'Tangental_velocity_error_covar.shape: {self._tangental_velocity_error_covar.shape}')
-        
-        self._R = self.get_R(self.objs.ra, self.objs.dec)
-        print(f'R.shape: {self._R.shape}')
-        
-        self.objs_dxyz =np.array([R.dot(v) for R,v in zip(self._R, self._tangental_velocity)])
-        print(f'objs_dxyz.shape: {self.objs_dxyz.shape}')
-        
-        self.objs_xyz = self.to_cartesian(self.objs.ra, self.objs.dec, self.objs.parallax)
-        print(f'objs_xyz.shape: {self.objs_xyz.shape}')
-        
-        self.objs_dxyz_covar = np.array([R.dot(tvec.dot(R.T)) for R,tvec in zip(self._R, self._tangental_velocity_error_covar)])
-        print(f'objs_dxyz_covar.shape: {self.objs_dxyz_covar.shape}')
-
-        self.rv_mask = np.array([np.ones(self.n_stars), np.ones(self.n_stars), np.where(np.isfinite(self.objs.radial_velocity),1,0)]).T.reshape(-1,3,1)
-        
-    def to_cartesian(self, ra, dec, plx):
-        dist = 1000.0/plx
-        cos_alpha = np.cos(np.radians(ra))
-        sin_alpha = np.sin(np.radians(ra))
-        cos_delta = np.cos(np.radians(dec))
-        sin_delta = np.sin(np.radians(dec))
-        
-        xyz = np.array([dist*cos_alpha*cos_delta, dist*sin_alpha*cos_delta, dist*sin_delta]).T
-        
-        # return as array of 3x1 column vectors
-        return xyz.reshape(-1,3,1)
-    
-    def to_spherical(self,xyz):
-        r = np.sqrt((xyz**2).sum(axis=0))
-        delta = np.arctan(xyz[2]/np.sqrt(xyz[0]**2+xyz[1]**2))
-        alpha = np.arctan2(xyz[1], xyz[0])
-        alpha = np.where(alpha<0, alpha+2.0*np.pi, alpha)
-
-        spherical = {'distance':r,
-                     'ra': np.rad2deg(alpha),
-                     'dec': np.rad2deg(delta)
-        }
-    
-        return spherical   
-
-    def tangental_velocity(self):
-        A = self.A
-        rv = np.where(np.isfinite(self.objs.radial_velocity),self.objs.radial_velocity,0)
-        tang_v = np.array([A*self.objs.pmra/self.objs.parallax, A*self.objs.pmdec/self.objs.parallax, rv]).T
-        return tang_v.reshape(-1,3,1)
-        
-    def Jacobian(self):
-        objs = self.objs
-        n = len(objs)
-        A = self.A
-        plx_sq = objs.parallax**2
- 
-        temp = np.array([A/objs.parallax, np.zeros(n), -objs.pmra*A/plx_sq,  np.zeros(n),
-                          np.zeros(n), A/objs.parallax,-objs.pmdec*A/plx_sq, np.zeros(n),
-                          np.zeros(n), np.zeros(n),     np.zeros(n),         np.ones(n)
-                       ]).T.reshape(-1,3,4)
-        return temp
-    
-    def _get_covar(self, s):
-        """
-        Returns 4x4 covariance matrix for pmra, pmdec, parallax, rv
-        """
-        #ref: https://stats.stackexchange.com/questions/62850/obtaining-covariance-matrix-from-correlation-matrix
-        rv_error = s.radial_velocity_error if np.isfinite(s.radial_velocity_error) else 0
-        #radial velocity error assumed to be not correlated with anything
-        # form correlation matrix
-        R = np.array([ [ 1,                     s.pmra_pmdec_corr,       s.parallax_pmra_corr,  0],
-                       [ s.pmra_pmdec_corr,     1,                       s.parallax_pmdec_corr, 0],
-                       [ s.parallax_pmra_corr,  s.parallax_pmdec_corr,   1,                     0],
-                       [ 0,                     0,                       0,                     1]
-                     ])
-        # form diagnonal matrix of std devs
-        diag_s = np.diag([s.pmra_error, s.pmdec_error, s.parallax_error, rv_error])
-
-        # covar matrix is corr matrix pre- and post-multiplied by the std devs
-        covar = diag_s.dot(R.dot(diag_s))
-
-        return covar
-    
-    def Covariance(self):
-        objs = self.objs
-        covar = np.array([self._get_covar(s) for key, s in objs.iterrows()])
-        return covar
-    
-    def tangental_velocity_error_covar(self):
-        #get the jacobian
-        jac = self.Jacobian()
-        #get the covariance matrix
-        covar = self._Covariance
-        vel_err = np.array([j.dot(c).dot(j.T) for j,c in zip(jac,covar)])
-        return vel_err
-    
-    def get_R(self, ra, dec):
-        #returns the transform matrix
-        zero = 0 if not hasattr(ra,'__len__') else np.zeros(len(ra))
-        rarad = np.radians(ra)
-        decrad = np.radians(dec)
-
-
-        sin_alpha = np.sin(rarad); cos_alpha = np.cos(rarad)
-        sin_delta = np.sin(decrad); cos_delta=np.cos(decrad)
-
-        dm = np.array([
-                      -sin_alpha,   -sin_delta*cos_alpha,  cos_delta*cos_alpha,
-                       cos_alpha,   -sin_alpha*sin_delta,  cos_delta*sin_alpha,
-                       zero,         cos_delta,            sin_delta]).T
-        return dm.reshape(-1,3,3).squeeze()
         
     def fit(self,conf = 0.95, max_dist=100, maxiter=100):
-        
-        chi_val = np.where(np.isfinite(self.objs.radial_velocity), chi2.ppf(conf, 3), chi2.ppf(conf,2))
         
 
         print('iterating')
@@ -193,7 +176,7 @@ class perryman():
             center_motion = self.calculate_center_motion(was_member_last_iter)
             
             is_member_this_iter = self.calculate_membership(center_pos, center_motion,
-                                                            chi_val=chi_val, max_dist=max_dist)
+                                                            conf, max_dist=max_dist)
             
             if not np.any(np.logical_xor(was_member_last_iter,is_member_this_iter)):
                 break
@@ -209,28 +192,31 @@ class perryman():
     
     def calculate_center_pos(self, member_list):
 
-        xyz = self.objs_xyz[member_list].mean(axis=0)
-        eq_coords = self.to_spherical(xyz)
-        R = self.get_R(eq_coords['ra'], eq_coords['dec'])
+        xyz_m = self.objs_xyz[member_list]
+        xyz = xyz_m.mean(axis=0)
+        #eq_coords = self.to_spherical(xyz)
+        #R = self.get_R(eq_coords['ra'], eq_coords['dec'])
         
-        ret_dict = {'xyz':xyz,
-                    'eq_coords':eq_coords,
-                    'R':R}
+        ret_dict = {'xyz':xyz} #,
+                #    'eq_coords':eq_coords,
+                #    'R':R}
 
         return ret_dict
     
     def calculate_center_motion(self, member_list):
-        # means fo the members
+        # means of the members
         
-        d_xyz = self.objs_dxyz[member_list].mean(axis=0)
-        #d_xyz_covar = self.objs_dxyz_covar[member_list].mean(axis=0)
-        d_xyz_covar = np.cov(self.objs_dxyz[member_list].reshape(-1,3),rowvar=False)
-        tang_v = self._tangental_velocity[member_list].mean(axis=0)
+        d_xyz_m = self.objs_d_xyz[member_list]
+        d_xyz = d_xyz_m.mean(axis=0)
 
-        return {'d_xyz':d_xyz, 'd_xyz_covar':d_xyz_covar, 'tangental_velocity': tang_v}
+        d_xyz_covar = np.cov(d_xyz_m.reshape(-1,3),rowvar=False)
+
+        return {'d_xyz':d_xyz, 'd_xyz_covar':d_xyz_covar}
     
     def calculate_center_distance(self, cen_xyz):
-        cen_dist_xyz = self.objs_xyz - cen_xyz[np.newaxis,:]
+
+        xyz_m = self.objs_xyz
+        cen_dist_xyz = xyz_m - cen_xyz[np.newaxis,:]
         
         cen_dist = np.sqrt((cen_dist_xyz**2).sum(axis=1)).reshape(-1)
         
@@ -250,33 +236,12 @@ class perryman():
         
         return vel
     
-    def calculate_membership(self, center_pos, center_motion, chi_val, max_dist):
+    def calculate_membership(self, center_pos, center_motion, conf, max_dist):
 
-        # calc difference between observed  and expected motion
-        # project center's motion to each stars position
-        exp_motion = np.array([R.T.dot(center_motion['d_xyz']) for R in self._R])
-        assert exp_motion.shape == self._tangental_velocity.shape
-
-        #create difference and mask out rv when necessary
-        delta_tang_v = (self._tangental_velocity - exp_motion)*self.rv_mask
-
-        #3/30/21 - revised to compare the center's d_xyz to that of the star
-        
-        #get the center's velocity covar at each star's position
-        cen_covar = center_motion['d_xyz_covar']
-        cen_covar_i = np.array([R.T.dot(cen_covar.dot(R)) for R in self._R])*self.rv_mask
-        #add the covars and invert the result
-        Sigma_inv = np.linalg.inv(self._tangental_velocity_error_covar+cen_covar_i)
-        #Sigma_inv = np.linalg.inv(self.objs_dxyz_covar+cen_covar[np.newaxis,...])
-        #delta_d_xyz = self.objs_dxyz - center_motion['d_xyz'][np.newaxis,...]
-        
-        #form the chi square statistic
-        c = np.array([z.T.dot(S).dot(z) for z,S in zip(delta_tang_v, Sigma_inv)]).reshape(-1)
-        
-        #calculate distance from center
+        velocity_consistent = np.array([s.compare_center_motion(center_motion, conf) for s in self.stars])
         cen_dist = self.calculate_center_distance(center_pos['xyz'])
         
-        is_member = np.logical_and(c < chi_val, cen_dist <= max_dist)
+        is_member = np.logical_and(velocity_consistent, cen_dist <= max_dist)
         
         return is_member
     
