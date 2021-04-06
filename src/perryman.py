@@ -21,7 +21,7 @@ class star():
         self.dof = 3 if np.isfinite(gstar.radial_velocity) else 2
         self.R = self.get_R(gstar, self.dof==3)
 
-        self.xyz, self.d_xyz, self.d_xyz_covar, self.pm_error, self.pm_covar, self.tang_v, self.tang_v_covar=self.eq_to_cartesian(gstar, self.dof==3)
+        self.xyz, self.d_xyz_2d, self.d_xyz_3d, self.pm_error, self.pm_covar, self.tang_v, self.tang_v_covar=self.eq_to_cartesian(gstar, self.dof==3)
 
     def get_R(self, gstar, three_d):
         rarad = self.rarad; decrad=self.decrad
@@ -61,10 +61,18 @@ class star():
 
         R = self.R
         xyz = self.distance*np.array([np.cos(self.decrad)*np.cos(self.rarad), np.cos(self.decrad)*np.sin(self.rarad),np.sin(self.decrad)]).reshape(-1,1)
+
         tang_v = np.array([[A*gstar.pmra/gstar.parallax], [A*gstar.pmdec/gstar.parallax], [rv]])
-        if not three_d:
+        if three_d:
+            d_xyz_3d = R.dot(tang_v)
+            # calculate space velocity as if rv was 0
+            tang_v_2d = np.array([tang_v[0,0], tang_v[1,0], 0.0]).reshape(-1,1)
+            d_xyz_2d = R.dot(tang_v_2d)
+        else:
+            #space velocities are the same
             tang_v = tang_v[:2]
-        d_xyz = R.dot(tang_v)
+            d_xyz_3d = d_xyz_2d = R.dot(tang_v)
+
 
         #get the covariance matrix of d_xyz
         # {parallax, pmra, pmdec, rv}; rv not correlated with anything
@@ -83,19 +91,32 @@ class star():
 
         pm_jacobian = self.get_pm_jacobian(gstar, three_d)
         tang_v_covar = pm_jacobian.dot(pm_covar.dot(pm_jacobian.T))
-        d_xyz_covar = R.dot(tang_v_covar.dot(R.T))
+        #don't think we need this for the individual stars
+        #d_xyz_covar = R.dot(tang_v_covar.dot(R.T))
 
-        return xyz, d_xyz, d_xyz_covar, pm_error, pm_covar, tang_v, tang_v_covar
+        return xyz, d_xyz_2d, d_xyz_3d,  pm_error, pm_covar, tang_v, tang_v_covar
 
     def compare_center_motion(self, center_motion, conf):
         chi_val = chi2.ppf(conf, self.dof)
 
         # get center's expected motion at star's position and calculate difference
-        exp_motion = self.R.T.dot(center_motion['d_xyz'])
+
+        #2d or 3d?
+        if self.dof == 3:
+            cen_d_xyz = center_motion['d_xyz_3d']
+            cen_covar = center_motion['d_xyz_covar_3d']
+        else:
+            cen_d_xyz = center_motion['d_xyz_2d']
+            cen_covar = center_motion['d_xyz_covar_2d']
+
+        exp_motion = self.R.T.dot(cen_d_xyz)
         delta_tang_v = self.tang_v - exp_motion
         # get the covariance of the exp motion at the position:
-        cen_covar = self.R.T.dot(center_motion['d_xyz_covar'].dot(self.R))
-        Sigma_inv = np.linalg.inv(self.tang_v_covar+cen_covar)
+        cen_covar_i = self.R.T.dot(cen_covar.dot(self.R))
+
+        #need inverse of covariance matrix of delta_tang_v
+        #which is the inverse of the sum of the center's and star's cov's.
+        Sigma_inv = np.linalg.inv(self.tang_v_covar+cen_covar_i)
 
         #chi square stat:
         c = delta_tang_v.T.dot(Sigma_inv.dot(delta_tang_v))[0,0]
@@ -157,9 +178,11 @@ class perryman():
         print(f'Model initialized with {self.init_members.sum()} members; Missing members: {len(self.missing_members)}')
         
         self.stars = [star(s,id) for id,s in star_df.iterrows()]
+        self.stars_3d = np.array([s.dof == 3 for s in self.stars])
+
         self.objs_xyz = np.array([s.xyz for s in self.stars])
-        self.objs_d_xyz = np.array([s.d_xyz for s in self.stars])
-        
+        self.objs_d_xyz_2d = np.array([s.d_xyz_2d for s in self.stars])
+        self.objs_d_xyz_3d = np.array([s.d_xyz_3d for s in self.stars])        
         
     def fit(self,conf = 0.95, max_dist=100, maxiter=100):
         
@@ -204,14 +227,22 @@ class perryman():
         return ret_dict
     
     def calculate_center_motion(self, member_list):
-        # means of the members
+        # means of the members, 3d stars calc'd separately
+
+        stars_3d = np.logical_and(self.stars_3d, member_list)
+        stars_2d = np.logical_and(~self.stars_3d, member_list)
         
-        d_xyz_m = self.objs_d_xyz[member_list]
-        d_xyz = d_xyz_m.mean(axis=0)
+        d_xyz_m_2d = self.objs_d_xyz_2d[stars_2d]
+        d_xyz_2d = d_xyz_m_2d.mean(axis=0)
+        d_xyz_covar_2d = np.cov(d_xyz_m_2d.reshape(-1,3),rowvar=False)
 
-        d_xyz_covar = np.cov(d_xyz_m.reshape(-1,3),rowvar=False)
+        d_xyz_m_3d = self.objs_d_xyz_3d[stars_3d]
+        d_xyz_3d = d_xyz_m_3d.mean(axis=0)
+        d_xyz_covar_3d = np.cov(d_xyz_m_3d.reshape(-1,3),rowvar=False)
 
-        return {'d_xyz':d_xyz, 'd_xyz_covar':d_xyz_covar}
+        return {'d_xyz_2d':d_xyz_2d, 'd_xyz_covar_2d':d_xyz_covar_2d,
+                'd_xyz_3d':d_xyz_3d, 'd_xyz_covar_3d':d_xyz_covar_3d
+        }
     
     def calculate_center_distance(self, cen_xyz):
 
