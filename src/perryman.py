@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 import astropy.units as u
 
+from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 def rms(x):
     return np.sqrt((x**2).sum()/len(x))
@@ -142,6 +145,8 @@ class perryman():
 
         A = (rad_per_mas*pc_per_mas_plx*km_per_pc/seconds_per_year).to_value()
         self.A = A
+        self.center_pos=None
+        self.center_motion=None
         
         if type(init_members) is list:
             
@@ -171,6 +176,13 @@ class perryman():
             members = np.logical_and(seps_ok, dist_ok)
             self.init_members = np.array(members)
             self.missing_members = []
+
+        elif type(init_members) is pd.Series:
+            center_info=self.star_to_center(init_members)
+            self.center_pos = center_info['position']
+            self.center_motion = center_info['motion']
+            self.init_members=np.zeros(self.n_stars, dtype=bool)
+            self.missing_members = []
             
         else:
             print(f'init_members argument must be a list or dict, not a {type(init_members)}')
@@ -182,36 +194,135 @@ class perryman():
 
         self.objs_xyz = np.array([s.xyz for s in self.stars])
         self.objs_d_xyz_2d = np.array([s.d_xyz_2d for s in self.stars])
-        self.objs_d_xyz_3d = np.array([s.d_xyz_3d for s in self.stars])        
+        self.objs_d_xyz_3d = np.array([s.d_xyz_3d for s in self.stars])
+
+    def label_objs(self, label_name, labels, default_label=False):
+        #get the itersection of the labels and the objects
+        common_ids = self.objs.index.intersection(labels.index)
+
+        obj_labels = pd.Series(default_label, index=self.objs.index)
+        obj_labels[common_ids] = labels[common_ids]
+
+        self.objs[label_name]=obj_labels
+
+        nc = len(common_ids)
+        N = len(labels)
+        nf = N - nc
         
+        print(f'Objects to be labeled: {N}, objects labeled: {nc}, objects not found: {nf}')
+
+
+    def star_to_center(self, star_info, corr_method='obj_means'):
+        """
+        takes parameters from star_info anc creates center object that perryman can use
+        require that star have radial_velocity and radial_velocity_error
+        returns center_pos and center_motion
+        """
+        if type(star_info) is pd.Series:
+            s = dict(star_info)
+        else:
+            s = star_info
+
+        if not (np.isfinite(s.get('radial_velocity', np.nan)) & np.isfinite(s.get('radial_velocity_error', np.nan))):
+            raise ValueError('Values for radial_velocity and radial_velocity_error must be supplied')
+    
+        if s.get('parallax_pmra_corr') is None:
+            corrs = self.get_default_corr(method=corr_method)
+        else:
+            parallax_pmra_corr = s['parallax_pmra_corr']
+            parallax_pmdec_corr = s['parallax_pmdec_corr']
+            pmra_pmdec_corr =  s['pmra_pmdec_corr']
+            corrs = {'parallax_pmra_corr': parallax_pmra_corr,
+                    'parallax_pmdec_corr': parallax_pmdec_corr,
+                    'pmra_pmdec_corr': pmra_pmdec_corr}
+
+        astrometrics = ['ra','dec', 'parallax', 'pmra', 'pmdec', 'radial_velocity']
+        astrometric_values = { a:s[a] for a in astrometrics}
+        astrometric_errors  = { a+'_error':s[a+'_error'] for a in astrometrics}
+
+        gstar = pd.Series({**astrometric_values, **astrometric_errors, **corrs})
+
+        s = star(gstar,'Center')
+        #compute the 2d and 3d covariance matrices
+        R = s.R
+        tang_v_covar = s.tang_v_covar
+
+        d_xyz_covar_3d = R.dot(tang_v_covar.dot(R.T))
+        d_xyz_covar_2d = R[:,:2].dot(tang_v_covar[:2,:2].dot(R[:,:2].T))
+
+        return {'position':{'xyz':s.xyz},
+                'motion':{'d_xyz_2d':s.d_xyz_2d, 'd_xyz_3d':s.d_xyz_3d,'tang_v_covar':s.tang_v_covar,
+                            'd_xyz_covar_2d': d_xyz_covar_2d, 'd_xyz_covar_3d':d_xyz_covar_3d }}
+
+    def get_default_corr(self, method='obj_means'):
+        """
+        takes the mean correlation matrix of the constituent stars
+        """
+        if method == 'obj_means':
+            obj_means = self.objs[['parallax_pmra_corr', 'parallax_pmdec_corr', 'pmra_pmdec_corr']].mean()
+            ret_dict = dict(obj_means)
+        elif method == 'from_covar':
+
+            #get the mean of all of the covar matrices
+            all_covar = np.array([s.pm_covar[:3,:3] for s in self.stars])
+            pm_covar= all_covar.mean(axis=0)
+
+            #pull the correlation matrix out of the covar
+            pm_err = np.sqrt(np.diag(pm_covar))
+            Dinv = np.diag(1/pm_err)
+            pm_corr = Dinv.dot(pm_covar.dot(Dinv))
+
+            ret_dict = {
+                'parallax_pmra_corr':  pm_corr[0,1],
+                'parallax_pmdec_corr': pm_corr[0,2],
+                'pmra_pmdec_corr': pm_corr[1,2]
+            }
+        else:
+            raise ValueError(f'method must be either \'obj_means\' or \'from_covar\'; Method specified: {method}')
+
+        return ret_dict
+
     def fit(self,conf = 0.95, max_dist=100, maxiter=100):
         
 
         print('iterating')
         iter = 0
-        is_member_this_iter = self.init_members
+ 
         self.nmembers_iter = np.full(maxiter, np.nan)
+        if self.center_pos is None:
+            is_member_this_iter = self.init_members
+            self.center_pos = self.calculate_center_pos(self.init_members)
+            self.center_motion = self.calculate_center_motion(self.init_members)
+        else:
+            is_member_this_iter = np.zeros(self.n_stars, dtype=bool)
+
         while iter < maxiter:
 
             was_member_last_iter = is_member_this_iter
             self.nmembers_iter[iter] = was_member_last_iter.sum()
-            center_pos = self.calculate_center_pos(was_member_last_iter)
-            center_motion = self.calculate_center_motion(was_member_last_iter)
-            
-            is_member_this_iter = self.calculate_membership(center_pos, center_motion,
+
+            is_member_this_iter = self.calculate_membership(self.center_pos, self.center_motion,
                                                             conf, max_dist=max_dist)
+        
+ 
+           
+            self.center_pos = self.calculate_center_pos(is_member_this_iter)
+            self.center_motion = self.calculate_center_motion(is_member_this_iter)
             
             if not np.any(np.logical_xor(was_member_last_iter,is_member_this_iter)):
                 break
             iter += 1
                 
         print(f'Iterations remaining: {maxiter - iter}, number of members: {is_member_this_iter.sum()}')
-        
-        self.center_pos = center_pos
-        self.center_motion = center_motion
+
         self.members = is_member_this_iter
+
+        member_df = pd.DataFrame([(s.source_id, m) for s,m in zip(self.stars, is_member_this_iter)],
+                columns=['source_id','IsMember']).set_index('source_id')
         
-        return center_pos, center_motion, is_member_this_iter
+        self.objs['IsMember'] = member_df
+        
+        return
     
     def calculate_center_pos(self, member_list):
 
@@ -252,7 +363,49 @@ class perryman():
         cen_dist = np.sqrt((cen_dist_xyz**2).sum(axis=1)).reshape(-1)
         
         return cen_dist
-    
+
+    def calculate_center_astrometrics(self):
+
+        # get the means of the members:
+        sqrt_n = np.sqrt(self.members.sum())
+        member_means = self.objs[self.members].mean()
+        # errors and correlations:
+        cols = ['ra','dec','parallax', 'pmra', 'pmdec']
+        err = self.objs[self.members][cols].std(ddof=1)
+        corr = pd.DataFrame(np.corrcoef(self.objs[self.members][cols], rowvar=False),
+                index=cols, columns=cols)
+
+        #deal with radial velocity
+        rv_members = np.logical_and(np.isfinite(self.objs.radial_velocity), self.members)
+        n_rv = rv_members.sum()
+        if n_rv > 0:
+            sqrt_n_rv = np.sqrt(n_rv)
+            rv = self.objs.radial_velocity[rv_members].mean()
+            rv_error = self.objs.radial_velocity_error[rv_members].std(ddof=1)
+        else:
+            rv = rv_error = sqrt_n_rv = np.nan
+
+        return {'ra': member_means.ra, 'ra_error':err.ra/sqrt_n,
+            'dec': member_means.dec, 'dec_error':err.dec/sqrt_n,
+            'parallax': member_means.parallax, 'parallax_error': err.parallax/sqrt_n,
+            'pmra': member_means.pmra, 'pmra_error': err.pmra/sqrt_n,
+            'pmdec': member_means.pmdec, 'pmdec_error': err.pmdec/sqrt_n,
+            'radial_velocity': rv, 'radial_velocity_error': rv_error/sqrt_n_rv,
+            'ra_dec_corr':        corr.loc['ra'].loc['dec'],
+            'ra_parallax_corr':   corr.loc['ra'].loc['parallax'],
+            'ra_pmra_corr':       corr.loc['ra'].loc['pmra'],
+            'ra_pmdec_corr':      corr.loc['ra'].loc['pmdec'],
+            'dec_parallax_corr':  corr.loc['dec'].loc['parallax'],
+            'dec_pmra_corr':      corr.loc['dec'].loc['pmra'],
+            'dec_pmdec_corr':     corr.loc['dec'].loc['pmdec'],
+            'parallax_pmra_corr': corr.loc['parallax'].loc['pmra'],
+            'parallax_pmdec_corr':corr.loc['parallax'].loc['pmdec'],
+            'pmra_pmdec_corr':    corr.loc['pmra'].loc['pmdec'],
+            'n_members': self.members.sum(),
+            'n_members_rv': n_rv
+            }
+
+
     def calculate_bc_velocity(self, cen_vel=None):
         
         sqrt_three_halves = np.sqrt(3.0/2.0)
@@ -376,7 +529,69 @@ class perryman():
         vel_dist.set_xlabel('Distance from Center (pc)')
         vel_dist.set_title('Barycentric Velocity v. Distance from Center')
 
-def get_R(star_dict):
+    def est_velocity(self, fig=None, axl=None, pcttile=(5.0,95.0)):
+        from matplotlib.ticker import FormatStrFormatter
+
+       #get the stars with RV
+        rv_stars = np.isfinite(self.objs.radial_velocity)
+        d_xyz_2d = np.array([s.d_xyz_2d for s in self.stars if s.dof == 3]).reshape(-1,3)
+        d_xyz_3d = np.array([s.d_xyz_3d for s in self.stars if s.dof == 3]).reshape(-1,3)
+
+        #ditch the outliers
+
+        v_2d = np.sqrt((d_xyz_2d**2).sum(axis=1))
+        v_bounds = np.percentile(v_2d, pcttile)
+        in_bounds = np.logical_and(v_2d >= v_bounds[0], v_2d <= v_bounds[1])
+        v_2d = v_2d[in_bounds].reshape(-1,1)
+        v_3d = np.sqrt((d_xyz_3d**2).sum(axis=1))[in_bounds].reshape(-1,1)
+
+        lrmod = LinearRegression().fit(v_2d, v_3d)
+        score = lrmod.score(v_2d.reshape(-1,1), v_3d)
+
+        coefs = {'intercept':lrmod.intercept_, 'coef': lrmod.coef_, 'rsquared':score}
+
+        if fig is not None:
+            gspec = gridspec.GridSpecFromSubplotSpec(1,2, subplot_spec=axl, width_ratios=[6.5,3.5],wspace=0.0)
+            ax = fig.add_subplot(gspec[0])
+            tblax = fig.add_subplot(gspec[1])
+            v_2d_f = np.linspace(v_2d.min(), v_2d.max(), 10000)
+            v_3d_f = lrmod.predict(v_2d_f.reshape(-1,1)).reshape(-1)
+
+            ax.scatter(v_2d, v_3d, s=1, color='blue', label='Actual')
+            ax.plot(v_2d_f, v_3d_f, color='red', lw=3, label='Fitted')
+            #ax.plot(v_2d_f, v_2d_f, color='red',ls='-', lw=2, label='Abs(rv)=0')
+
+            ax.set_xlabel('Velocity Assuming RV=0 (km/s)')
+            ax.set_ylabel('Velocity including RV (km/s)')
+
+            ax.legend(loc='upper left')
+            ax.grid()
+
+            #plot the summary table to the right
+            cspec = (0.0, 1.0, 0.0, 0.3)
+            tbl2 = tblax.table(
+                    colLabels = ['Measure', 'Value'],
+                    colColours = [cspec, cspec], alpha=0.3,
+                    cellText = [
+                        ['Stars in Fit', f'{len(v_2d):,}'],
+                        ['R-Squared',f'{score:.4f}'],
+                        ['Intercept',f'{lrmod.intercept_[0]:.2f}'],
+                        ['Slope', f'{lrmod.coef_[0,0]:.2f}']
+                    ],
+                    colWidths=[0.6, 0.4],
+                    bbox=[0.0, 0.20, 1.0, 0.6])
+            tbl2.auto_set_font_size(False)
+            tbl2.set_fontsize(12)
+
+            for a in [axl,  tblax]:
+                a.xaxis.set_major_formatter(plt.NullFormatter())
+                a.yaxis.set_major_formatter(plt.NullFormatter())
+                a.set_yticks([])
+                a.set_xticks([])
+
+        return coefs
+    
+def _get_R(star_dict):
     A = 4.740470463496208
     star = pd.Series(star_dict)
 
@@ -442,7 +657,7 @@ def cartesian_to_eq(xyz, d_xyz, d_xyz_covar):
 
     print(f'RA: {ra}, Dec: {dec}, parallax: {parallax}')
 
-    R = get_R({'ra':ra, 'dec':dec, 'parallax':parallax})
+    R = _get_R({'ra':ra, 'dec':dec, 'parallax':parallax})
     # R.T is same as inverse(R)
     tang_v =  R.T.dot(d_xyz)
     pmra = tang_v[0,0]*parallax/A
@@ -466,7 +681,7 @@ def cartesian_to_eq(xyz, d_xyz, d_xyz_covar):
                 'pmra':pmra, 'pmra_error': pm_err[1],
                 'pmdec': pmdec, 'pmdec_error':pm_err[2],
                 'radial_velocity':rv, 'radial_velocity_error':pm_err[3],
-                'pmra_pmdec_corr':pm_corr[1,1],
+                'pmra_pmdec_corr':pm_corr[1,2],
                 'parallax_pmra_corr': pm_corr[0,1],
                 'parallax_pmdec_corr': pm_corr[0,2]}
 

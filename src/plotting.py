@@ -198,8 +198,9 @@ def plot_points_to(ptr, cluster, ax):
 # =======
 from matplotlib.font_manager import FontProperties
 from matplotlib.patches import Rectangle
+import matplotlib.gridspec as gridspec
 
-def plot_confusion_matrix(y_true, y_hat, title=None, ax=None):
+def plot_confusion_matrix(y_true, y_hat, title=None,fig=None, axl=None):
     tn = np.logical_and(~y_true, ~y_hat).sum()
     fp = np.logical_and(~y_true, y_hat).sum()
     fn = np.logical_and(y_true, ~y_hat).sum()
@@ -214,6 +215,11 @@ def plot_confusion_matrix(y_true, y_hat, title=None, ax=None):
 
     precision = tp/(tp+fp)
     recall = tp/(tp+fn)
+
+    gspec = gridspec.GridSpecFromSubplotSpec(1,2, subplot_spec=axl, width_ratios=[7,3],
+                        wspace=0.0)
+    ax = fig.add_subplot(gspec[0])
+    tblax = fig.add_subplot(gspec[1])
 
     va = 'top'
     ha = 'center'
@@ -267,15 +273,13 @@ def plot_confusion_matrix(y_true, y_hat, title=None, ax=None):
 
     #ax.axvline(0.5, color='black')
     #ax.axhline(0.5, color='black')
-    ax.xaxis.set_major_formatter(plt.NullFormatter())
-    ax.yaxis.set_major_formatter(plt.NullFormatter())
-    ax.set_yticks([])
-    ax.set_xticks([])
-    ax.set_title('Confusion Matrix' if title is None else title, size=16, pad=10,weight='bold')
+
+
+    axl.set_title('Confusion Matrix' if title is None else title, size=16, pad=10,weight='bold')
 
     #plot the summary table to the right
     cspec = (0.0, 1.0, 0.0, 0.3)
-    tbl2 = ax.table(
+    tbl2 = tblax.table(
         colLabels = ['Measure', 'Value'],
         colColours = [cspec, cspec], alpha=0.3,
         cellText = [
@@ -289,8 +293,14 @@ def plot_confusion_matrix(y_true, y_hat, title=None, ax=None):
             ['Balanced Accuracy', f'{100*bal_acc:.2f}%']
 
         ],
-        colWidths=[0.4, 0.3],
-        bbox=[1.05, 0.20, 0.4, 0.6])
+        colWidths=[0.6, 0.4],
+        bbox=[0.0, 0.20, 1.0, 0.6])
     tbl2.auto_set_font_size(False)
     tbl2.set_fontsize(12)
+
+    for a in [axl, ax, tblax]:
+        a.xaxis.set_major_formatter(plt.NullFormatter())
+        a.yaxis.set_major_formatter(plt.NullFormatter())
+        a.set_yticks([])
+        a.set_xticks([])
 # >>>>>>> master
