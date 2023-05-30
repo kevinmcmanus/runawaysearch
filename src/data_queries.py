@@ -65,7 +65,8 @@ def formatSIMBADtoGAIA(simbad_table, name_mapper=None):
     my_table = simbad_table.copy() # so we don't clobber the argument table
 
     #change the TYPED_ID to a regular ol' string (gotta be a better way to do this):
-    my_table['TYPED_ID'] = [c.decode('utf-8') for c in my_table['TYPED_ID']]
+    #SIMBAD now apparently returns this col as a string
+    #my_table['TYPED_ID'] = [c.decode('utf-8') for c in my_table['TYPED_ID']]
 
     #fix up the column names
     my_table.rename_column('TYPED_ID','typed_id')
@@ -136,10 +137,11 @@ def getClusterInfo():
     #augment with data from Table2.  See Table2Readme.txt in data directory
 
     #hunt for the data directory
+    wd = os.getcwd()
     datadir = None
-    for d in ['./data', '../data'] :
-        if os.path.isdir(d):
-            datadir = d
+    for d in ['data', '../data'] :
+        datadir = os.path.join(wd, d)
+        if os.path.isdir(datadir):
             break
 
         
