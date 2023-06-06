@@ -34,7 +34,12 @@ class gaiastars():
 								'tblcols': [ 'ra','dec','parallax','pmra','pmdec','dr2_radial_velocity',
 								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'ruwe']}
 	}
-
+	# dr3
+	gaia_column_dict_gaiadr3 ={
+		'gaiadr3.gaia_source':{'idcol': 'source_id',
+								'tblcols': [ 'ra','dec','parallax','pmra','pmdec','radial_velocity',
+								'phot_g_mean_mag','phot_bp_mean_mag', 'phot_rp_mean_mag', 'ruwe']}
+	}
 	
 	def gaia_column_dict(self, schema):
 		
@@ -42,6 +47,8 @@ class gaiastars():
 			coldict = self.gaia_column_dict_gaiadr2
 		elif schema=='gaiaedr3':
 			coldict = self.gaia_column_dict_gaiaedr3
+		elif schema=='gaiadr3':
+			coldict = self.gaia_column_dict_gaiadr3
 		else:
 			errorstr = f'Invalid schema specification: {schema}'
 			raise ValueError(errorstr)
@@ -257,7 +264,7 @@ class gaiastars():
 
 
 	def from_source_idlist(self, source_idlist, column_dict=None,
-				schema='gaiaedr3',
+				schema='gaiadr3',
 				query_type='async'):
 		"""
 		Queries Gaia Archive for specified records; returns columns as spec'd in column_dict
