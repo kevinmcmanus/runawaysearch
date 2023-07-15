@@ -259,7 +259,7 @@ class gaiastars():
 		# hacks for edr3
 		if not ('r_est' in self.objs.columns):
 			if 'parallax' in self.objs.columns:
-				self.objs['r_est'] = 1000.0/self.objs.parallax
+				self.objs['r_est'] = np.abs(1000.0/self.objs.parallax) # right solution for negative parallax??
 		self.objs.rename(columns={'dr2_radial_velocity':'radial_velocity',
 								 'dr2_radial_velocity_error':'radial_velocity_error'}, inplace=True)
 
@@ -420,7 +420,7 @@ class gaiastars():
 			fig.colorbar(pcm)
 		
 		return pcm
-	
+
 	def __get_coords__(self, recalc, default_rv):
 		#computes and caches sky coordinates for the objects
 		#set recalc=True to force recalculation
@@ -441,8 +441,8 @@ class gaiastars():
 			self.coords = coord.SkyCoord(ra=np.array(self.objs.ra)*u.degree,
 					dec=np.array(self.objs.dec)*u.degree,
 					distance=np.array(self.objs.r_est)*u.pc,
-					pm_ra_cosdec=np.array(self.objs.pmra)*u.mas/u.yr,
-					pm_dec=np.array(self.objs.pmdec)*u.mas/u.yr,
+					pm_ra_cosdec=np.nan_to_num(self.objs.pmra, nan=0.0)*u.mas/u.yr,
+					pm_dec=np.nan_to_num(self.objs.pmdec, nan=0.0)*u.mas/u.yr,
 					radial_velocity=rv,
 					obstime = t_gaia)
 
